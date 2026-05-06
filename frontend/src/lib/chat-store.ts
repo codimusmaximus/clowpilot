@@ -97,6 +97,21 @@ function applyToolToWorkspace(name: string, result: unknown) {
       ws.openFile(path, content, lang);
       break;
     }
+    case "move_path": {
+      const { source, destination } = r as { source: string; destination: string };
+      const affected = ws.tabs.filter(
+        (t) => t.kind === "file" && (t.path === source || t.path.startsWith(`${source}/`))
+      );
+      for (const tab of affected) {
+        if (tab.kind !== "file") continue;
+        const newPath = destination + tab.path.slice(source.length);
+        ws.closeFile(tab.path);
+        fetchFile(newPath)
+          .then((f) => useWorkspace.getState().openFile(f.path, f.content, f.kind))
+          .catch(() => undefined);
+      }
+      break;
+    }
     case "delete_file": {
       const deletedPaths = Array.isArray(r.deleted_paths)
         ? r.deleted_paths

@@ -2,14 +2,16 @@ import { Sidebar } from "@/components/sidebar";
 import { Chat } from "@/components/chat";
 import { Workspace } from "@/components/workspace";
 import { CopilotRuntimeProvider } from "@/lib/runtime";
+import { ResizableSplit } from "@/components/resizable-split";
 
 export default function Home() {
   return (
-    <div className="grain relative grid h-full grid-cols-[18rem_minmax(0,1fr)_minmax(28rem,1.4fr)]">
+    <div className="grain relative flex h-full">
       <CopilotRuntimeProvider>
-        <Sidebar />
-        <Chat />
-        <Workspace />
+        <div className="w-72 shrink-0">
+          <Sidebar />
+        </div>
+        <ResizableSplit left={<Chat />} right={<Workspace />} />
       </CopilotRuntimeProvider>
     </div>
   );

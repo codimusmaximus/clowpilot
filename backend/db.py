@@ -218,6 +218,77 @@ def delete_path(path: str) -> int:
     return int(file_cursor.rowcount) + int(folder_cursor.rowcount)
 
 
+def move_path(source: str, destination_folder: str) -> dict[str, Any]:
+    """Move a file or folder into destination_folder (empty string = root)."""
+    src_rel = source.strip("/")
+    dst_folder = destination_folder.strip("/")
+
+    if not src_rel:
+        return {"error": "source path cannot be empty"}
+
+    src_name = Path(src_rel).name
+    new_rel = f"{dst_folder}/{src_name}".strip("/") if dst_folder else src_name
+
+    if src_rel == new_rel:
+        return {"error": "source and destination are the same", "path": src_rel}
+
+    if new_rel.startswith(f"{src_rel}/"):
+        return {"error": "cannot move a folder into one of its own subfolders"}
+
+    now = time.time()
+    with _connect() as conn:
+        is_file = conn.execute("SELECT 1 FROM files WHERE path = ?", (src_rel,)).fetchone() is not None
+        is_folder = conn.execute("SELECT 1 FROM folders WHERE path = ?", (src_rel,)).fetchone() is not None
+
+        if not is_file and not is_folder:
+            return {"error": f"not found: {source}"}
+
+        if conn.execute("SELECT 1 FROM files WHERE path = ?", (new_rel,)).fetchone():
+            return {"error": f"destination already exists: {new_rel}"}
+        if conn.execute("SELECT 1 FROM folders WHERE path = ?", (new_rel,)).fetchone():
+            return {"error": f"destination already exists: {new_rel}"}
+
+        for folder in _parent_folders(f"{new_rel}/_"):
+            conn.execute(
+                "INSERT OR IGNORE INTO folders (path, created_at) VALUES (?, ?)",
+                (folder, now),
+            )
+
+        moved_files = 0
+        moved_folders = 0
+
+        if is_file:
+            conn.execute("UPDATE files SET path = ? WHERE path = ?", (new_rel, src_rel))
+            moved_files = 1
+        else:
+            conn.execute("UPDATE folders SET path = ? WHERE path = ?", (new_rel, src_rel))
+            moved_folders = 1
+
+            for row in conn.execute(
+                "SELECT path FROM files WHERE path LIKE ?", (f"{src_rel}/%",)
+            ).fetchall():
+                old = str(row["path"])
+                new = new_rel + old[len(src_rel):]
+                conn.execute("UPDATE files SET path = ? WHERE path = ?", (new, old))
+                moved_files += 1
+
+            for row in conn.execute(
+                "SELECT path FROM folders WHERE path LIKE ?", (f"{src_rel}/%",)
+            ).fetchall():
+                old = str(row["path"])
+                new = new_rel + old[len(src_rel):]
+                conn.execute("UPDATE folders SET path = ? WHERE path = ?", (new, old))
+                moved_folders += 1
+
+    return {
+        "source": src_rel,
+        "destination": new_rel,
+        "action": "moved",
+        "moved_files": moved_files,
+        "moved_folders": moved_folders,
+    }
+
+
 def list_paths_under(path: str) -> list[str]:
     with _connect() as conn:
         file_rows = conn.execute(

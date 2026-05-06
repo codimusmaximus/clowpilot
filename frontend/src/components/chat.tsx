@@ -71,7 +71,7 @@ function UserMessage() {
         <div className="mt-1 shrink-0">
           <span className="smallcaps">you</span>
         </div>
-        <div className="flex-1 text-bone">
+        <div className="flex-1 overflow-x-auto text-bone">
           <MessagePrimitive.Parts components={partsConfig} />
         </div>
       </div>
@@ -86,7 +86,7 @@ function AssistantMessage() {
         <div className="mt-1 shrink-0">
           <span className="smallcaps text-ember">studio</span>
         </div>
-        <div className="flex-1 min-w-0 text-bone">
+        <div className="flex-1 min-w-0 overflow-x-auto text-bone">
           <MessagePrimitive.Parts components={partsConfig} />
         </div>
       </div>

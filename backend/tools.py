@@ -206,6 +206,22 @@ def replace_file_lines(
     return result
 
 
+def move_path(source: str, destination: str = "") -> dict[str, Any]:
+    """Move a file or folder into destination folder (empty string = workspace root)."""
+    src = _safe_path(source)
+    src_rel = str(src.relative_to(WORKSPACE))
+    if src_rel == ".":
+        return {"error": "cannot move workspace root"}
+
+    dst_folder = ""
+    if destination:
+        dst = _safe_path(destination)
+        dst_rel = str(dst.relative_to(WORKSPACE))
+        dst_folder = "" if dst_rel == "." else dst_rel
+
+    return db.move_path(src_rel, dst_folder)
+
+
 def delete_file(path: str) -> dict[str, Any]:
     """Delete a file or virtual folder from the SQLite-backed workspace."""
     rel = str(_safe_path(path).relative_to(WORKSPACE))
@@ -270,6 +286,7 @@ TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "replace_in_file": replace_in_file,
     "replace_file_lines": replace_file_lines,
+    "move_path": move_path,
     "delete_file": delete_file,
     "display_file": display_file,
     "highlight": highlight,
@@ -363,6 +380,31 @@ TOOL_SCHEMAS = [
                 "content": {"type": "string"},
             },
             "required": ["path", "start_line", "end_line", "content"],
+        },
+    },
+    {
+        "name": "move_path",
+        "description": (
+            "Move a file or folder to a different folder in the workspace. "
+            "Set destination to '' (empty string) to move to the workspace root. "
+            "Moving a folder moves all its contents recursively."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Current path of the file or folder to move.",
+                },
+                "destination": {
+                    "type": "string",
+                    "description": (
+                        "Target parent folder path. "
+                        "Empty string or omit to move to workspace root."
+                    ),
+                },
+            },
+            "required": ["source"],
         },
     },
     {
