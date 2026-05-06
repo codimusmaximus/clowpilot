@@ -1,13 +1,40 @@
 "use client";
 
 import { create } from "zustand";
-import { CHAT_URL, fetchFile } from "./api";
+import {
+  CHAT_URL,
+  createConversation as createConversationApi,
+  createSystemPrompt as createSystemPromptApi,
+  fetchConversations,
+  fetchFile,
+  fetchMessages,
+  fetchSystemPrompts,
+  saveMessages,
+  setConversationSystemPrompt,
+  updateSystemPrompt as updateSystemPromptApi,
+} from "./api";
 import { useWorkspace } from "./workspace-store";
-import type { AppMessage, TextPart, ToolCallPart } from "./types";
+import type {
+  AppMessage,
+  Conversation,
+  SystemPrompt,
+  TextPart,
+  ToolCallPart,
+} from "./types";
 
 type ChatState = {
   messages: AppMessage[];
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  systemPrompts: SystemPrompt[];
+  activeSystemPromptId: string | null;
   isRunning: boolean;
+  load: () => Promise<void>;
+  newConversation: () => Promise<void>;
+  selectConversation: (id: string) => Promise<void>;
+  selectSystemPrompt: (id: string) => Promise<void>;
+  createSystemPrompt: (name: string, content: string) => Promise<void>;
+  updateSystemPrompt: (id: string, name: string, content: string) => Promise<void>;
   send: (text: string) => Promise<void>;
 };
 
@@ -57,6 +84,28 @@ function applyToolToWorkspace(name: string, result: unknown) {
       };
       const lang = PRINTABLE_LANGS.has(kind) ? kind : "text";
       ws.openFile(path, content, lang);
+      break;
+    }
+    case "replace_in_file":
+    case "replace_file_lines": {
+      const { path, content, kind } = r as {
+        path: string;
+        content: string;
+        kind: string;
+      };
+      const lang = PRINTABLE_LANGS.has(kind) ? kind : "text";
+      ws.openFile(path, content, lang);
+      break;
+    }
+    case "delete_file": {
+      const deletedPaths = Array.isArray(r.deleted_paths)
+        ? r.deleted_paths
+        : typeof r.path === "string"
+          ? [r.path]
+          : [];
+      for (const path of deletedPaths) {
+        if (typeof path === "string") ws.closeFile(path);
+      }
       break;
     }
     case "highlight": {
@@ -123,10 +172,105 @@ function ensureTextPart(parts: AppMessage["parts"]): TextPart {
 
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
+  conversations: [],
+  activeConversationId: null,
+  systemPrompts: [],
+  activeSystemPromptId: null,
   isRunning: false,
+
+  load: async () => {
+    if (get().isRunning) return;
+    const [{ conversations, activeConversationId }, prompts] = await Promise.all([
+      fetchConversations(),
+      fetchSystemPrompts(),
+    ]);
+    const messages = await fetchMessages(activeConversationId);
+    const activeConversation = conversations.find((c) => c.id === activeConversationId);
+    set({
+      conversations,
+      activeConversationId,
+      messages,
+      systemPrompts: prompts.prompts,
+      activeSystemPromptId:
+        activeConversation?.systemPromptId ?? prompts.activeSystemPromptId,
+    });
+  },
+
+  newConversation: async () => {
+    if (get().isRunning) return;
+    const conversation = await createConversationApi(
+      "New chat",
+      get().activeSystemPromptId
+    );
+    set((s) => ({
+      conversations: [conversation, ...s.conversations],
+      activeConversationId: conversation.id,
+      activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
+      messages: [],
+    }));
+  },
+
+  selectConversation: async (id) => {
+    if (get().isRunning || get().activeConversationId === id) return;
+    const messages = await fetchMessages(id);
+    const conversation = get().conversations.find((c) => c.id === id);
+    set({
+      activeConversationId: id,
+      activeSystemPromptId:
+        conversation?.systemPromptId ?? get().activeSystemPromptId,
+      messages,
+    });
+  },
+
+  selectSystemPrompt: async (id) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    const conversation = await setConversationSystemPrompt(conversationId, id);
+    set({ activeSystemPromptId: id });
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversation.id ? conversation : c
+      ),
+    }));
+  },
+
+  createSystemPrompt: async (name, content) => {
+    const prompt = await createSystemPromptApi(name, content);
+    const conversationId = get().activeConversationId;
+    const conversation = conversationId
+      ? await setConversationSystemPrompt(conversationId, prompt.id)
+      : null;
+    set((s) => ({
+      systemPrompts: [prompt, ...s.systemPrompts],
+      activeSystemPromptId: prompt.id,
+      conversations: conversation
+        ? s.conversations.map((c) => (c.id === conversation.id ? conversation : c))
+        : s.conversations,
+    }));
+  },
+
+  updateSystemPrompt: async (id, name, content) => {
+    const prompt = await updateSystemPromptApi(id, name, content);
+    set((s) => ({
+      systemPrompts: s.systemPrompts.map((p) => (p.id === id ? prompt : p)),
+    }));
+  },
 
   send: async (text: string) => {
     if (!text.trim() || get().isRunning) return;
+    let conversationId = get().activeConversationId;
+    if (!conversationId) {
+      const conversation = await createConversationApi(
+        "New chat",
+        get().activeSystemPromptId
+      );
+      conversationId = conversation.id;
+      set((s) => ({
+        conversations: [conversation, ...s.conversations],
+        activeConversationId: conversation.id,
+        activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
+      }));
+    }
 
     const userMsg: AppMessage = {
       id: newId(),
@@ -147,6 +291,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     const payload = {
+      conversationId,
+      systemPromptId: get().activeSystemPromptId,
       messages: [...get().messages]
         .filter((m) => m.id !== assistantMsg.id)
         .map((m) => ({
@@ -222,6 +368,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     } finally {
       set({ isRunning: false });
+      await saveMessages(conversationId, get().messages).catch(() => undefined);
+      const { conversations } = await fetchConversations().catch(() => ({
+        conversations: get().conversations,
+      }));
+      set({ conversations });
     }
   },
 }));

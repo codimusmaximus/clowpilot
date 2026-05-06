@@ -26,8 +26,12 @@ const TOOL_META: Record<
   { icon: IconComponent; label: string }
 > = {
   list_tree: { icon: Folder, label: "browsing files" },
+  create_folder: { icon: Folder, label: "creating folder" },
   read_file: { icon: FileText, label: "reading" },
   write_file: { icon: FilePen, label: "writing" },
+  replace_in_file: { icon: FilePen, label: "patching" },
+  replace_file_lines: { icon: FilePen, label: "patching lines" },
+  delete_file: { icon: FilePen, label: "deleting" },
   display_file: { icon: Eye, label: "showing" },
   highlight: { icon: Highlighter, label: "highlighting" },
   snippet: { icon: Sparkles, label: "drafting" },
@@ -38,6 +42,8 @@ function summarize(part: ToolCallPart): string {
   switch (part.toolName) {
     case "list_tree":
       return (args.path as string) || "/";
+    case "create_folder":
+      return (args.path as string) || "…";
     case "read_file":
     case "display_file":
       return (args.path as string) || "…";
@@ -45,6 +51,12 @@ function summarize(part: ToolCallPart): string {
       const lines = String(args.content ?? "").split("\n").length;
       return `${args.path ?? "…"} · ${lines} line${lines === 1 ? "" : "s"}`;
     }
+    case "replace_in_file":
+      return `${args.path ?? "…"} · exact text`;
+    case "replace_file_lines":
+      return `${args.path ?? "…"} · L${args.start_line}–${args.end_line}`;
+    case "delete_file":
+      return `${args.path ?? "…"}`;
     case "highlight":
       return `${args.path ?? "…"} · L${args.start_line}–${args.end_line}`;
     case "snippet":

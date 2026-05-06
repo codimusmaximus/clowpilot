@@ -1,7 +1,11 @@
 export type ToolName =
   | "list_tree"
+  | "create_folder"
   | "read_file"
   | "write_file"
+  | "replace_in_file"
+  | "replace_file_lines"
+  | "delete_file"
   | "display_file"
   | "highlight"
   | "snippet";
@@ -25,6 +29,22 @@ export type AppMessage = {
   role: "user" | "assistant";
   parts: Array<TextPart | ToolCallPart>;
   createdAt: number;
+};
+
+export type Conversation = {
+  id: string;
+  title: string;
+  systemPromptId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SystemPrompt = {
+  id: string;
+  name: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type FileNode = {

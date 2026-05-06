@@ -41,14 +41,26 @@ SYSTEM_PROMPT = """You are a workspace copilot embedded in a UI with three panes
 a left sidebar (file tree + threads), a centre chat (this conversation), and a
 right workspace pane (where files and snippets are displayed to the user).
 
-You operate inside a sandboxed file workspace. Use the tools to inspect, create,
-and modify files, and to project visual artefacts onto the right-hand workspace.
+You operate inside a sandboxed virtual file workspace backed by SQLite. Files and
+their contents are stored in the SQLite database, and folders are derived from
+the stored file paths; the local `workspace/` directory is not the source of
+truth. Use the tools to inspect, create, and modify these database-backed files,
+and to project visual artefacts onto the right-hand workspace.
 
 Working principles:
 - When the user references files, call `list_tree` to orient yourself before
   acting, unless you already know the layout from earlier in the conversation.
+- Use `create_folder` when the user asks for empty folders or subfolder
+  structure before files exist. Writing files still creates parent folders.
 - When you want the user to *look* at a file, call `display_file` so it opens
   in their workspace pane. Don't dump file contents into chat.
+- Use `replace_in_file` or `replace_file_lines` for small targeted edits. Use
+  `write_file` when creating a file or intentionally replacing the full content.
+- Use `delete_file` when the user asks you to remove a file or virtual folder.
+  The tool returns the deleted path or paths after the operation.
+- File CRUD tools return structured results after they run. Create/update/patch
+  results include the stored file content and metadata; delete results include
+  the removed path or paths.
 - Use `highlight` to draw the user's attention to specific line ranges with a
   comment — this is your primary teaching tool when explaining code or data.
 - Use `snippet` for ad-hoc artefacts: summaries, tables, diagrams (markdown),
@@ -58,7 +70,7 @@ Working principles:
 """
 
 
-agent = Agent(MODEL, instructions=SYSTEM_PROMPT)
+agent = Agent(MODEL)
 
 
 @agent.tool_plain
@@ -67,6 +79,12 @@ def list_tree(path: str = "") -> dict[str, Any]:
     before reading or modifying them. `path` is a subdirectory relative to
     the workspace root; empty means root."""
     return tools.list_tree(path)
+
+
+@agent.tool_plain
+def create_folder(path: str) -> dict[str, Any]:
+    """Create an empty virtual subfolder in the SQLite-backed workspace."""
+    return tools.create_folder(path)
 
 
 @agent.tool_plain
@@ -81,6 +99,32 @@ def write_file(path: str, content: str, type: str | None = None) -> dict[str, An
     contents. Parent folders are created as needed. `type` is an optional
     language hint (python, markdown, json, etc.)."""
     return tools.write_file(path, content, type)
+
+
+@agent.tool_plain
+def replace_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
+    """Patch a file by replacing one exact unique text fragment. Use for small
+    targeted edits when you know the old text exactly."""
+    return tools.replace_in_file(path, old_text, new_text)
+
+
+@agent.tool_plain
+def replace_file_lines(
+    path: str,
+    start_line: int,
+    end_line: int,
+    content: str,
+) -> dict[str, Any]:
+    """Patch a file by replacing an inclusive 1-based line range. Use when
+    exact text replacement is ambiguous or line numbers are known."""
+    return tools.replace_file_lines(path, start_line, end_line, content)
+
+
+@agent.tool_plain
+def delete_file(path: str) -> dict[str, Any]:
+    """Delete a file or virtual folder from the SQLite-backed workspace. Returns
+    the deleted path or paths after the operation."""
+    return tools.delete_file(path)
 
 
 @agent.tool_plain
@@ -117,13 +161,18 @@ def snippet(content: str, format: str = "markdown") -> dict[str, Any]:
 async def run(
     prompt: str,
     history: list[ModelMessage],
+    system_prompt: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the agent and yield SSE event dicts mirroring the previous protocol."""
 
     # index → {"id", "name"} so we can attach deltas to the right tool call
     tool_calls: dict[int, dict[str, str]] = {}
 
-    async for event in agent.run_stream_events(prompt, message_history=history):
+    async for event in agent.run_stream_events(
+        prompt,
+        message_history=history,
+        instructions=system_prompt or SYSTEM_PROMPT,
+    ):
         if isinstance(event, PartStartEvent):
             part = event.part
             if isinstance(part, TextPart):

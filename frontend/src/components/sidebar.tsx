@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspace-store";
+import { useChatStore } from "@/lib/chat-store";
 import { fetchTree, fetchFile, uploadFile } from "@/lib/api";
 import type { FileNode } from "@/lib/types";
 
@@ -20,6 +21,11 @@ export function Sidebar() {
   const setLoading = useWorkspace((s) => s.setTreeLoading);
   const loading = useWorkspace((s) => s.treeLoading);
   const openFile = useWorkspace((s) => s.openFile);
+  const conversations = useChatStore((s) => s.conversations);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const isRunning = useChatStore((s) => s.isRunning);
+  const newConversation = useChatStore((s) => s.newConversation);
+  const selectConversation = useChatStore((s) => s.selectConversation);
 
   const refresh = async () => {
     setLoading(true);
@@ -60,27 +66,62 @@ export function Sidebar() {
   return (
     <aside className="flex h-full min-h-0 flex-col border-r border-rule bg-ground-2/40">
       <div className="shrink-0 px-4 py-4">
-        <div className="flex items-baseline gap-2">
-          <span className="font-display text-xl italic text-bone">studio</span>
-          <span className="font-mono text-[10px] text-bone-muted">
-            v0.1
-          </span>
-        </div>
+        <span className="font-display text-xl italic text-bone">Atelier</span>
         <p className="mt-1 text-[11px] leading-relaxed text-bone-muted">
-          assistant-ui · fastapi · claude
+          workspace copilot
         </p>
       </div>
 
       <div className="px-4 pb-3">
-        <span className="smallcaps">threads</span>
+        <div className="flex items-center gap-2">
+          <span className="smallcaps flex-1">threads</span>
+          <button
+            type="button"
+            aria-label="new chat"
+            title="new chat"
+            disabled={isRunning}
+            onClick={() => newConversation().catch(() => undefined)}
+            className="rounded p-1 text-bone-muted hover:bg-ground hover:text-bone disabled:opacity-40"
+          >
+            <Plus className="size-3" strokeWidth={1.6} />
+          </button>
+        </div>
         <ul className="mt-1.5 space-y-1">
-          <li className="flex items-center gap-2 rounded border border-rule bg-ground/60 px-2.5 py-1.5">
-            <span className="size-1.5 rounded-full bg-ember" />
-            <span className="text-[12px] text-bone">current session</span>
-          </li>
-          <li className="px-2.5 py-1 text-[11.5px] text-bone-muted">
-            (history — not implemented)
-          </li>
+          {conversations.map((conversation) => {
+            const active = conversation.id === activeConversationId;
+            return (
+              <li key={conversation.id}>
+                <button
+                  type="button"
+                  disabled={isRunning}
+                  onClick={() =>
+                    selectConversation(conversation.id).catch(() => undefined)
+                  }
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left disabled:opacity-40",
+                    active
+                      ? "border-rule bg-ground/60 text-bone"
+                      : "border-transparent text-bone-dim hover:bg-ground/50 hover:text-bone"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      active ? "bg-ember" : "bg-bone-muted"
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[12px]">
+                    {conversation.title}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+          {conversations.length === 0 && (
+            <li className="px-2.5 py-1 text-[11.5px] text-bone-muted">
+              no chats yet
+            </li>
+          )}
         </ul>
       </div>
 

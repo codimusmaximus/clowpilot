@@ -24,8 +24,10 @@ type WorkspaceState = {
     title?: string
   ) => string;
   updateFileContent: (path: string, content: string) => void;
+  closeFile: (path: string) => void;
 
   addHighlight: (h: Omit<Highlight, "id" | "createdAt">) => void;
+  removeHighlight: (id: string) => void;
   clearHighlightsForPath: (path: string) => void;
 
   closeTab: (id: string) => void;
@@ -123,6 +125,19 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
       ),
     })),
 
+  closeFile: (path) =>
+    set((s) => {
+      const id = fileTabId(path);
+      const tabs = s.tabs.filter((t) => t.id !== id);
+      const activeTabId =
+        s.activeTabId === id ? tabs.at(-1)?.id ?? null : s.activeTabId;
+      return {
+        tabs,
+        activeTabId,
+        highlights: s.highlights.filter((h) => h.path !== path),
+      };
+    }),
+
   addHighlight: (h) =>
     set((s) => ({
       highlights: [
@@ -135,6 +150,11 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
           createdAt: Date.now(),
         },
       ],
+    })),
+
+  removeHighlight: (id) =>
+    set((s) => ({
+      highlights: s.highlights.filter((h) => h.id !== id),
     })),
 
   clearHighlightsForPath: (path) =>

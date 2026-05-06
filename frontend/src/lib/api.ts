@@ -1,4 +1,4 @@
-import type { FileNode } from "./types";
+import type { AppMessage, Conversation, FileNode, SystemPrompt } from "./types";
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -27,6 +27,118 @@ export async function uploadFile(file: File, folder = ""): Promise<void> {
   }`;
   const res = await fetch(url, { method: "POST", body: fd });
   if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+}
+
+export async function fetchConversations(): Promise<{
+  conversations: Conversation[];
+  activeConversationId: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/conversations`);
+  if (!res.ok) throw new Error(`conversations fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createConversation(
+  title = "New chat",
+  systemPromptId?: string | null
+): Promise<Conversation> {
+  const res = await fetch(`${API_BASE}/api/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, systemPromptId }),
+  });
+  if (!res.ok) throw new Error(`conversation create failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchMessages(
+  conversationId: string
+): Promise<AppMessage[]> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`
+  );
+  if (!res.ok) throw new Error(`messages fetch failed: ${res.status}`);
+  const data = (await res.json()) as { messages: AppMessage[] };
+  return data.messages;
+}
+
+export async function saveMessages(
+  conversationId: string,
+  messages: AppMessage[]
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    }
+  );
+  if (!res.ok) throw new Error(`messages save failed: ${res.status}`);
+}
+
+export async function fetchSystemPrompts(): Promise<{
+  prompts: SystemPrompt[];
+  activeSystemPromptId: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/system-prompts`);
+  if (!res.ok) throw new Error(`system prompts fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createSystemPrompt(
+  name: string,
+  content: string
+): Promise<SystemPrompt> {
+  const res = await fetch(`${API_BASE}/api/system-prompts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, content }),
+  });
+  if (!res.ok) throw new Error(`system prompt create failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updateSystemPrompt(
+  id: string,
+  name: string,
+  content: string
+): Promise<SystemPrompt> {
+  const res = await fetch(
+    `${API_BASE}/api/system-prompts/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, content }),
+    }
+  );
+  if (!res.ok) throw new Error(`system prompt update failed: ${res.status}`);
+  return res.json();
+}
+
+export async function setActiveSystemPrompt(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/system-prompts/active`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(`system prompt select failed: ${res.status}`);
+}
+
+export async function setConversationSystemPrompt(
+  conversationId: string,
+  id: string
+): Promise<Conversation> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/system-prompt`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }
+  );
+  if (!res.ok) throw new Error(`conversation prompt select failed: ${res.status}`);
+  return res.json();
 }
 
 export const CHAT_URL = `${API_BASE}/api/chat`;

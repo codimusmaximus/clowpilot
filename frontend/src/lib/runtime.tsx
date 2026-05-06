@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -35,7 +36,12 @@ export function CopilotRuntimeProvider({
 }) {
   const messages = useChatStore((s) => s.messages);
   const isRunning = useChatStore((s) => s.isRunning);
+  const load = useChatStore((s) => s.load);
   const send = useChatStore((s) => s.send);
+
+  useEffect(() => {
+    load().catch(() => undefined);
+  }, [load]);
 
   const runtime = useExternalStoreRuntime<AppMessage>({
     isRunning,

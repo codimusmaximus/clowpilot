@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+import db
+
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "./workspace")).resolve()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
@@ -42,42 +44,99 @@ def _ext_kind(path: Path) -> str:
 # ---------- tools ----------
 
 def list_tree(path: str = "") -> dict[str, Any]:
-    """Walk the sandbox subtree at `path` and return a nested structure."""
-    root = _safe_path(path) if path else WORKSPACE
-
-    def walk(p: Path) -> dict[str, Any]:
-        node: dict[str, Any] = {
-            "name": p.name or "workspace",
-            "path": str(p.relative_to(WORKSPACE)) if p != WORKSPACE else "",
+    """Return a nested file tree from the SQLite-backed workspace."""
+    _safe_path(path) if path else WORKSPACE
+    rel = path.strip("/")
+    files = db.list_files()
+    folders = db.list_folders()
+    exact = next((f for f in files if f["path"] == rel), None)
+    if exact:
+        return {
+            "name": Path(rel).name,
+            "path": rel,
+            "type": "file",
+            "kind": exact["kind"],
+            "size": exact["bytes"],
         }
-        if p.is_dir():
-            node["type"] = "dir"
-            children = []
-            for child in sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name)):
-                if child.name.startswith("."):
-                    continue
-                children.append(walk(child))
-            node["children"] = children
-        else:
-            node["type"] = "file"
-            node["kind"] = _ext_kind(p)
-            node["size"] = p.stat().st_size
+
+    root: dict[str, Any] = {
+        "name": Path(rel).name if rel else "workspace",
+        "path": rel,
+        "type": "dir",
+        "children": [],
+    }
+    dirs: dict[str, dict[str, Any]] = {rel: root}
+    prefix = f"{rel}/" if rel else ""
+
+    def ensure_dir(path: str) -> dict[str, Any]:
+        if path in dirs:
+            return dirs[path]
+        parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
+        parent = ensure_dir(parent_path) if parent_path else root
+        node = {
+            "name": Path(path).name,
+            "path": path,
+            "type": "dir",
+            "children": [],
+        }
+        dirs[path] = node
+        parent["children"].append(node)
         return node
 
-    return walk(root)
+    for folder in folders:
+        folder_path = str(folder)
+        if folder_path == rel or (rel and not folder_path.startswith(prefix)):
+            continue
+        ensure_dir(folder_path)
+
+    for file in files:
+        file_path = str(file["path"])
+        if rel and not file_path.startswith(prefix):
+            continue
+        parts = file_path.split("/")
+        parent_path = "/".join(parts[:-1])
+        parent = ensure_dir(parent_path) if parent_path else root
+        if rel and parent_path == rel:
+            parent = root
+        parent["children"].append(
+            {
+                "name": parts[-1],
+                "path": file_path,
+                "type": "file",
+                "kind": file["kind"],
+                "size": file["bytes"],
+            }
+        )
+
+    def sort_children(node: dict[str, Any]) -> None:
+        children = node.get("children", [])
+        children.sort(key=lambda x: (x["type"] == "file", x["name"].lower()))
+        for child in children:
+            if child["type"] == "dir":
+                sort_children(child)
+
+    sort_children(root)
+    return root
+
+
+def create_folder(path: str) -> dict[str, Any]:
+    """Create an empty virtual folder in the SQLite-backed workspace."""
+    rel = str(_safe_path(path).relative_to(WORKSPACE))
+    if rel == ".":
+        rel = ""
+    if not rel:
+        return {"error": "path must name a subfolder"}
+    if db.file_exists(rel):
+        return {"error": f"file already exists at: {path}", "path": rel}
+    return db.create_folder(rel)
 
 
 def read_file(path: str) -> dict[str, Any]:
-    p = _safe_path(path)
-    if not p.exists() or not p.is_file():
+    rel = str(_safe_path(path).relative_to(WORKSPACE))
+    file = db.get_file(rel)
+    if file is None:
         return {"error": f"file not found: {path}"}
-    content = p.read_text(encoding="utf-8", errors="replace")
-    return {
-        "path": str(p.relative_to(WORKSPACE)),
-        "content": content,
-        "kind": _ext_kind(p),
-        "lines": content.count("\n") + 1,
-    }
+    return file
 
 
 def write_file(
@@ -88,16 +147,77 @@ def write_file(
     """Create or update a file. `type` is an optional language/format hint;
     if missing we infer from the extension."""
     p = _safe_path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    existed = p.exists()
-    p.write_text(content, encoding="utf-8")
+    return db.upsert_file(str(p.relative_to(WORKSPACE)), content, type or _ext_kind(p))
+
+
+def replace_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
+    """Replace one exact text fragment inside a file."""
+    current = read_file(path)
+    if "error" in current:
+        return current
+    if old_text == "":
+        return {"error": "old_text cannot be empty"}
+    content = str(current["content"])
+    count = content.count(old_text)
+    if count == 0:
+        return {"error": "old_text not found", "path": current["path"]}
+    if count > 1:
+        return {
+            "error": "old_text is not unique; use replace_file_lines instead",
+            "path": current["path"],
+            "matches": count,
+        }
+    updated = content.replace(old_text, new_text, 1)
+    result = db.upsert_file(str(current["path"]), updated, str(current["kind"]))
+    result["action"] = "patched"
+    return result
+
+
+def replace_file_lines(
+    path: str,
+    start_line: int,
+    end_line: int,
+    content: str,
+) -> dict[str, Any]:
+    """Replace an inclusive 1-based line range inside a file."""
+    current = read_file(path)
+    if "error" in current:
+        return current
+    if start_line < 1 or end_line < start_line:
+        return {"error": "invalid line range", "path": current["path"]}
+
+    existing = str(current["content"])
+    had_trailing_newline = existing.endswith("\n")
+    lines = existing.splitlines()
+    if start_line > len(lines) + 1 or end_line > len(lines):
+        return {
+            "error": "line range outside file",
+            "path": current["path"],
+            "lines": len(lines),
+        }
+
+    replacement = content.splitlines()
+    updated_lines = lines[: start_line - 1] + replacement + lines[end_line:]
+    updated = "\n".join(updated_lines)
+    if had_trailing_newline or content.endswith("\n"):
+        updated += "\n"
+    result = db.upsert_file(str(current["path"]), updated, str(current["kind"]))
+    result["action"] = "patched"
+    return result
+
+
+def delete_file(path: str) -> dict[str, Any]:
+    """Delete a file or virtual folder from the SQLite-backed workspace."""
+    rel = str(_safe_path(path).relative_to(WORKSPACE))
+    deleted_paths = db.list_paths_under(rel)
+    if not deleted_paths:
+        return {"error": f"file not found: {path}", "path": rel}
+    deleted = db.delete_path(rel)
     return {
-        "path": str(p.relative_to(WORKSPACE)),
-        "kind": type or _ext_kind(p),
-        "bytes": len(content.encode("utf-8")),
-        "lines": content.count("\n") + 1,
-        "action": "updated" if existed else "created",
-        "content": content,
+        "path": rel,
+        "action": "deleted",
+        "deleted": deleted,
+        "deleted_paths": deleted_paths,
     }
 
 
@@ -121,7 +241,7 @@ def highlight(
 ) -> dict[str, Any]:
     """Highlight a line range in the open file viewer with an attached comment."""
     p = _safe_path(path)
-    if not p.exists():
+    if not db.file_exists(str(p.relative_to(WORKSPACE))):
         return {"error": f"file not found: {path}"}
     return {
         "path": str(p.relative_to(WORKSPACE)),
@@ -145,8 +265,12 @@ def snippet(content: str, format: str = "markdown") -> dict[str, Any]:
 
 TOOLS: dict[str, Any] = {
     "list_tree": list_tree,
+    "create_folder": create_folder,
     "read_file": read_file,
     "write_file": write_file,
+    "replace_in_file": replace_in_file,
+    "replace_file_lines": replace_file_lines,
+    "delete_file": delete_file,
     "display_file": display_file,
     "highlight": highlight,
     "snippet": snippet,
@@ -168,6 +292,18 @@ TOOL_SCHEMAS = [
                     "description": "Subdirectory relative to workspace root. Empty = root.",
                 },
             },
+        },
+    },
+    {
+        "name": "create_folder",
+        "description": (
+            "Create an empty virtual subfolder in the SQLite-backed workspace. "
+            "Use this when the user wants folder structure before files exist."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
         },
     },
     {
@@ -194,6 +330,51 @@ TOOL_SCHEMAS = [
                 "type": {"type": "string"},
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "replace_in_file",
+        "description": (
+            "Patch a file by replacing one exact unique text fragment. Use this "
+            "for small targeted edits when you know the old text exactly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
+        "name": "replace_file_lines",
+        "description": (
+            "Patch a file by replacing an inclusive 1-based line range. Use this "
+            "when exact text replacement is ambiguous or line numbers are known."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "start_line", "end_line", "content"],
+        },
+    },
+    {
+        "name": "delete_file",
+        "description": (
+            "Delete a file or virtual folder from the SQLite-backed workspace. "
+            "Deleting a folder deletes all files whose paths are under it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
         },
     },
     {

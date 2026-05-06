@@ -135,6 +135,11 @@ body {
   outline-offset: 2px;
   border-radius: 2px;
 }
+.composer-input:focus,
+.composer-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
 
 /* shimmer pulse (running tool) -------------------------------------- */
 @keyframes ember-pulse {
