@@ -2,3 +2,7 @@
 **/.env
 **/.env.*
 !**/.env.example
+
+# Local SQLite data
+*.sqlite3
+*.sqlite3-*
