@@ -8,14 +8,16 @@ export function ResizableSplit({
   defaultLeftPct = 42,
   minLeftPct = 22,
   maxLeftPct = 75,
+  direction = "horizontal",
 }: {
   left: React.ReactNode;
   right: React.ReactNode;
   defaultLeftPct?: number;
   minLeftPct?: number;
   maxLeftPct?: number;
+  direction?: "horizontal" | "vertical";
 }) {
-  const [leftPct, setLeftPct] = useState(defaultLeftPct);
+  const [firstPct, setFirstPct] = useState(defaultLeftPct);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
 
@@ -27,8 +29,11 @@ export function ResizableSplit({
       const onMove = (me: MouseEvent) => {
         if (!dragging.current || !containerRef.current) return;
         const rect = containerRef.current.getBoundingClientRect();
-        const pct = ((me.clientX - rect.left) / rect.width) * 100;
-        setLeftPct(Math.min(Math.max(pct, minLeftPct), maxLeftPct));
+        const pct =
+          direction === "vertical"
+            ? ((me.clientY - rect.top) / rect.height) * 100
+            : ((me.clientX - rect.left) / rect.width) * 100;
+        setFirstPct(Math.min(Math.max(pct, minLeftPct), maxLeftPct));
       };
 
       const onUp = () => {
@@ -40,12 +45,36 @@ export function ResizableSplit({
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     },
-    [minLeftPct, maxLeftPct]
+    [direction, minLeftPct, maxLeftPct]
   );
+
+  if (direction === "vertical") {
+    return (
+      <div ref={containerRef} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+        <div className="min-h-0 min-w-0 overflow-hidden" style={{ height: `${firstPct}%` }}>
+          {left}
+        </div>
+
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize panels"
+          className="group relative z-10 flex h-1 shrink-0 cursor-row-resize items-center justify-center"
+          onMouseDown={onMouseDown}
+        >
+          <div className="h-px w-full bg-rule transition-colors group-hover:bg-ember/40 group-active:bg-ember/60" />
+        </div>
+
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+          {right}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={containerRef} className="flex h-full min-h-0 min-w-0 flex-1">
-      <div className="min-h-0 min-w-0 overflow-hidden" style={{ width: `${leftPct}%` }}>
+      <div className="min-h-0 min-w-0 overflow-hidden" style={{ width: `${firstPct}%` }}>
         {left}
       </div>
 

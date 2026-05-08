@@ -14,6 +14,7 @@ import { useWorkspace } from "@/lib/workspace-store";
 import { useChatStore } from "@/lib/chat-store";
 import { fetchTree, fetchFile, uploadFile } from "@/lib/api";
 import type { FileNode } from "@/lib/types";
+import { ResizableSplit } from "./resizable-split";
 
 export function Sidebar() {
   const tree = useWorkspace((s) => s.tree);
@@ -63,69 +64,64 @@ export function Sidebar() {
     }
   };
 
-  return (
-    <aside className="flex h-full min-h-0 flex-col border-r border-rule bg-ground-2/40">
-      <div className="shrink-0 px-4 py-4">
-        <span className="font-display text-xl italic text-bone">Atelier</span>
-        <p className="mt-1 text-[11px] leading-relaxed text-bone-muted">
-          workspace copilot
-        </p>
+  const threadsPanel = (
+    <div className="flex h-full flex-col px-4 pt-3 pb-1">
+      <div className="flex items-center gap-2 shrink-0">
+        <span className="smallcaps flex-1">threads</span>
+        <button
+          type="button"
+          aria-label="new chat"
+          title="new chat"
+          disabled={isRunning}
+          onClick={() => newConversation().catch(() => undefined)}
+          className="rounded p-1 text-bone-muted hover:bg-ground hover:text-bone disabled:opacity-40"
+        >
+          <Plus className="size-3" strokeWidth={1.6} />
+        </button>
       </div>
-
-      <div className="px-4 pb-3">
-        <div className="flex items-center gap-2">
-          <span className="smallcaps flex-1">threads</span>
-          <button
-            type="button"
-            aria-label="new chat"
-            title="new chat"
-            disabled={isRunning}
-            onClick={() => newConversation().catch(() => undefined)}
-            className="rounded p-1 text-bone-muted hover:bg-ground hover:text-bone disabled:opacity-40"
-          >
-            <Plus className="size-3" strokeWidth={1.6} />
-          </button>
-        </div>
-        <ul className="mt-1.5 space-y-1">
-          {conversations.map((conversation) => {
-            const active = conversation.id === activeConversationId;
-            return (
-              <li key={conversation.id}>
-                <button
-                  type="button"
-                  disabled={isRunning}
-                  onClick={() =>
-                    selectConversation(conversation.id).catch(() => undefined)
-                  }
+      <ul className="mt-1.5 min-h-0 flex-1 space-y-1 overflow-y-auto">
+        {conversations.map((conversation) => {
+          const active = conversation.id === activeConversationId;
+          return (
+            <li key={conversation.id}>
+              <button
+                type="button"
+                disabled={isRunning}
+                onClick={() =>
+                  selectConversation(conversation.id).catch(() => undefined)
+                }
+                className={cn(
+                  "flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left disabled:opacity-40",
+                  active
+                    ? "border-rule bg-ground/60 text-bone"
+                    : "border-transparent text-bone-dim hover:bg-ground/50 hover:text-bone"
+                )}
+              >
+                <span
                   className={cn(
-                    "flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left disabled:opacity-40",
-                    active
-                      ? "border-rule bg-ground/60 text-bone"
-                      : "border-transparent text-bone-dim hover:bg-ground/50 hover:text-bone"
+                    "size-1.5 shrink-0 rounded-full",
+                    active ? "bg-ember" : "bg-bone-muted"
                   )}
-                >
-                  <span
-                    className={cn(
-                      "size-1.5 shrink-0 rounded-full",
-                      active ? "bg-ember" : "bg-bone-muted"
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[12px]">
-                    {conversation.title}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-          {conversations.length === 0 && (
-            <li className="px-2.5 py-1 text-[11.5px] text-bone-muted">
-              no chats yet
+                />
+                <span className="min-w-0 flex-1 truncate text-[12px]">
+                  {conversation.title}
+                </span>
+              </button>
             </li>
-          )}
-        </ul>
-      </div>
+          );
+        })}
+        {conversations.length === 0 && (
+          <li className="px-2.5 py-1 text-[11.5px] text-bone-muted">
+            no chats yet
+          </li>
+        )}
+      </ul>
+    </div>
+  );
 
-      <div className="flex shrink-0 items-center gap-2 border-t border-rule px-4 pt-3 pb-2">
+  const workspacePanel = (
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2">
         <span className="smallcaps flex-1">workspace</span>
         <label
           className="cursor-pointer rounded p-1 text-bone-muted hover:bg-ground hover:text-bone"
@@ -151,7 +147,6 @@ export function Sidebar() {
           />
         </button>
       </div>
-
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-6">
         {tree ? (
           <TreeView node={tree} depth={0} onOpenFile={handleOpenFile} />
@@ -159,6 +154,26 @@ export function Sidebar() {
           <p className="px-3 py-2 text-xs text-bone-muted">loading…</p>
         )}
       </div>
+    </div>
+  );
+
+  return (
+    <aside className="flex h-full min-h-0 flex-col border-r border-rule bg-ground-2/40">
+      <div className="shrink-0 px-4 py-4">
+        <span className="font-display text-xl italic text-bone">Atelier</span>
+        <p className="mt-1 text-[11px] leading-relaxed text-bone-muted">
+          workspace copilot
+        </p>
+      </div>
+
+      <ResizableSplit
+        direction="vertical"
+        defaultLeftPct={50}
+        minLeftPct={15}
+        maxLeftPct={85}
+        left={threadsPanel}
+        right={workspacePanel}
+      />
     </aside>
   );
 }
