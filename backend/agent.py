@@ -54,8 +54,8 @@ Working principles:
 
 
 def _compose_system_prompt(
-    conversation_id: str | None = None,
     base_prompt: str = BASE_SYSTEM_PROMPT,
+    conversation_id: str | None = None,
 ) -> str:
     plugin_instructions = plugin_registry.instructions(conversation_id)
     if not plugin_instructions:
@@ -100,7 +100,8 @@ async def run(
         prompt,
         message_history=history,
         instructions=_compose_system_prompt(
-            conversation_id, system_prompt or BASE_SYSTEM_PROMPT
+            base_prompt=system_prompt or BASE_SYSTEM_PROMPT,
+            conversation_id=conversation_id,
         ),
     ):
         if isinstance(event, PartStartEvent):

@@ -14,16 +14,20 @@ import db
 from plugins.base import PluginSpec, ToolSpec
 
 
+# Override in tests to control which plugin modules are loaded.
+PLUGIN_MODULES: list = []
+
+
 def load_plugins() -> list[PluginSpec]:
-    """Dynamically discover and load all plugins in the plugins/ directory."""
+    """Load plugins from PLUGIN_MODULES if set, otherwise auto-discover."""
+    if PLUGIN_MODULES:
+        return [m.get_plugin() for m in PLUGIN_MODULES if hasattr(m, "get_plugin")]
+
     plugins = []
-    # Discover all submodules of the current package (plugins)
-    # We skip 'base' and 'registry' as they are not plugins
     package = importlib.import_module("plugins")
-    for _, name, is_pkg in pkgutil.iter_modules(package.__path__):
+    for _, name, _is_pkg in pkgutil.iter_modules(package.__path__):
         if name in ("base", "registry"):
             continue
-        
         module_name = f"plugins.{name}"
         try:
             module = importlib.import_module(module_name)
@@ -31,7 +35,6 @@ def load_plugins() -> list[PluginSpec]:
                 plugins.append(module.get_plugin())
         except Exception as e:
             print(f"Failed to load plugin {module_name}: {e}")
-            
     return plugins
 
 
