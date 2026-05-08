@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import tools
 import db
-from agent import SYSTEM_PROMPT, run, split_messages
+from agent import BASE_SYSTEM_PROMPT, run, split_messages
 from plugins import registry as plugin_registry
 
 load_dotenv()
@@ -94,13 +94,17 @@ async def chat(req: ChatRequest):
     raw = [m.model_dump() for m in req.messages]
     prompt, history = split_messages(raw)
     conversation = db.ensure_conversation(req.conversationId)
+    conversation_id = conversation["id"]
     system_prompt_id = req.systemPromptId or conversation.get("systemPromptId")
     system_prompt_row = db.get_system_prompt(system_prompt_id) if system_prompt_id else None
-    system_prompt = system_prompt_row["content"] if system_prompt_row else SYSTEM_PROMPT
+    
+    # We pass None for base_prompt to use the default BASE_SYSTEM_PROMPT
+    # inside agent._compose_system_prompt
+    base_prompt = system_prompt_row["content"] if system_prompt_row else None
 
     async def gen():
         try:
-            async for event in run(prompt, history, system_prompt):
+            async for event in run(prompt, history, conversation_id, base_prompt):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -159,7 +163,7 @@ def put_messages(conversation_id: str, req: MessagesRequest):
 
 @app.get("/api/system-prompts")
 def get_system_prompts():
-    prompt = db.ensure_system_prompt("Workspace copilot", SYSTEM_PROMPT)
+    prompt = db.ensure_system_prompt("Workspace copilot", BASE_SYSTEM_PROMPT)
     return {
         "prompts": db.list_system_prompts(),
         "activeSystemPromptId": db.get_active_system_prompt_id() or prompt["id"],
@@ -203,6 +207,28 @@ def put_plugin(plugin_id: str, req: PluginSettingsRequest):
     if plugin_id not in plugin_ids:
         raise HTTPException(404, f"plugin not found: {plugin_id}")
     return db.set_plugin_enabled(plugin_id, req.enabled, req.config)
+
+
+@app.get("/api/conversations/{conversation_id}/plugins")
+def get_conversation_plugins(conversation_id: str):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    return {"plugins": plugin_registry.list_plugin_status(conversation_id)}
+
+
+@app.put("/api/conversations/{conversation_id}/plugins/{plugin_id}")
+def put_conversation_plugin(
+    conversation_id: str, plugin_id: str, req: PluginSettingsRequest
+):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    plugin_ids = {plugin.id for plugin in plugin_registry.load_plugins()}
+    if plugin_id not in plugin_ids:
+        raise HTTPException(404, f"plugin not found: {plugin_id}")
+    db.set_conversation_plugin_enabled(
+        conversation_id, plugin_id, req.enabled, req.config
+    )
+    return {"ok": True}
 
 
 # ---------- workspace ----------
@@ -273,11 +299,11 @@ def _seed():
 SYSTEM_PROMPT_PRESETS = [
     (
         "Workspace copilot",
-        SYSTEM_PROMPT,
+        BASE_SYSTEM_PROMPT,
     ),
     (
         "Concise operator",
-        SYSTEM_PROMPT
+        BASE_SYSTEM_PROMPT
         + "\n\nStyle override:\n"
         + "- Be terse and action-oriented.\n"
         + "- Prefer tool use over explanation when the user asks for changes.\n"
@@ -285,7 +311,7 @@ SYSTEM_PROMPT_PRESETS = [
     ),
     (
         "Careful reviewer",
-        SYSTEM_PROMPT
+        BASE_SYSTEM_PROMPT
         + "\n\nReview mode:\n"
         + "- Prioritize correctness, edge cases, regressions, and missing tests.\n"
         + "- When reviewing, list findings first with file or line references when available.\n"
@@ -293,7 +319,7 @@ SYSTEM_PROMPT_PRESETS = [
     ),
     (
         "Teaching copilot",
-        SYSTEM_PROMPT
+        BASE_SYSTEM_PROMPT
         + "\n\nTeaching mode:\n"
         + "- Explain decisions briefly as you work.\n"
         + "- Use highlights and rendered snippets to make concepts visible.\n"
@@ -311,9 +337,15 @@ def _seed_system_prompts():
             db.set_active_system_prompt(prompt["id"])
 
 
+def _seed_plugins():
+    # Ensure core workspace is enabled globally by default
+    db.set_plugin_enabled("core.workspace", True)
+
+
 _seed()
 _seed_system_prompts()
-db.ensure_system_prompt("Workspace copilot", SYSTEM_PROMPT)
+_seed_plugins()
+db.ensure_system_prompt("Workspace copilot", BASE_SYSTEM_PROMPT)
 
 
 if __name__ == "__main__":

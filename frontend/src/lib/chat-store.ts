@@ -17,6 +17,7 @@ import { useWorkspace } from "./workspace-store";
 import type {
   AppMessage,
   Conversation,
+  PluginStatus,
   SystemPrompt,
   TextPart,
   ToolCallPart,
@@ -29,12 +30,15 @@ type ChatState = {
   systemPrompts: SystemPrompt[];
   activeSystemPromptId: string | null;
   isRunning: boolean;
+  plugins: PluginStatus[];
   load: () => Promise<void>;
   newConversation: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
   selectSystemPrompt: (id: string) => Promise<void>;
   createSystemPrompt: (name: string, content: string) => Promise<void>;
   updateSystemPrompt: (id: string, name: string, content: string) => Promise<void>;
+  fetchPlugins: () => Promise<void>;
+  togglePlugin: (pluginId: string, enabled: boolean) => Promise<void>;
   send: (text: string) => Promise<void>;
 };
 
@@ -192,6 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   systemPrompts: [],
   activeSystemPromptId: null,
   isRunning: false,
+  plugins: [],
 
   load: async () => {
     if (get().isRunning) return;
@@ -209,6 +214,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeSystemPromptId:
         activeConversation?.systemPromptId ?? prompts.activeSystemPromptId,
     });
+    await get().fetchPlugins();
   },
 
   newConversation: async () => {
@@ -223,6 +229,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
       messages: [],
     }));
+    await get().fetchPlugins();
   },
 
   selectConversation: async (id) => {
@@ -235,6 +242,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversation?.systemPromptId ?? get().activeSystemPromptId,
       messages,
     });
+    await get().fetchPlugins();
   },
 
   selectSystemPrompt: async (id) => {
@@ -269,6 +277,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       systemPrompts: s.systemPrompts.map((p) => (p.id === id ? prompt : p)),
     }));
+  },
+
+  fetchPlugins: async () => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    try {
+      const { fetchConversationPlugins } = await import("./api");
+      const plugins = await fetchConversationPlugins(conversationId);
+      set({ plugins });
+    } catch (err) {
+      console.error("fetchPlugins failed", err);
+    }
+  },
+
+  togglePlugin: async (pluginId, enabled) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    try {
+      const { toggleConversationPlugin } = await import("./api");
+      await toggleConversationPlugin(conversationId, pluginId, enabled);
+      set((s) => ({
+        plugins: s.plugins.map((p) =>
+          p.id === pluginId ? { ...p, enabled } : p
+        ),
+      }));
+    } catch (err) {
+      console.error("togglePlugin failed", err);
+    }
   },
 
   send: async (text: string) => {

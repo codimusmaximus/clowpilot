@@ -53,17 +53,17 @@ Working principles:
 """
 
 
-def _compose_system_prompt(base_prompt: str = BASE_SYSTEM_PROMPT) -> str:
-    plugin_instructions = plugin_registry.instructions()
+def _compose_system_prompt(
+    conversation_id: str | None = None,
+    base_prompt: str = BASE_SYSTEM_PROMPT,
+) -> str:
+    plugin_instructions = plugin_registry.instructions(conversation_id)
     if not plugin_instructions:
         return base_prompt
     return f"{base_prompt}\n\nEnabled plugins:\n\n{plugin_instructions}"
 
 
-SYSTEM_PROMPT = _compose_system_prompt(BASE_SYSTEM_PROMPT)
-
-
-def _build_agent() -> Agent:
+def _build_agent(conversation_id: str | None = None) -> Agent:
     runtime_agent = Agent(MODEL)
 
     def wrap_handler(handler):
@@ -75,7 +75,7 @@ def _build_agent() -> Agent:
 
         return safe_handler
 
-    for tool in plugin_registry.tools():
+    for tool in plugin_registry.tools(conversation_id):
         runtime_agent.tool_plain(wrap_handler(tool.handler), name=tool.name)
     return runtime_agent
 
@@ -86,6 +86,7 @@ def _build_agent() -> Agent:
 async def run(
     prompt: str,
     history: list[ModelMessage],
+    conversation_id: str | None = None,
     system_prompt: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the agent and yield SSE event dicts mirroring the previous protocol."""
@@ -93,12 +94,14 @@ async def run(
     # index → {"id", "name"} so we can attach deltas to the right tool call
     tool_calls: dict[int, dict[str, str]] = {}
 
-    runtime_agent = _build_agent()
+    runtime_agent = _build_agent(conversation_id)
 
     async for event in runtime_agent.run_stream_events(
         prompt,
         message_history=history,
-        instructions=_compose_system_prompt(system_prompt or BASE_SYSTEM_PROMPT),
+        instructions=_compose_system_prompt(
+            conversation_id, system_prompt or BASE_SYSTEM_PROMPT
+        ),
     ):
         if isinstance(event, PartStartEvent):
             part = event.part

@@ -113,6 +113,15 @@ def init() -> None:
                 updated_at REAL NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS conversation_plugins (
+                conversation_id TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                config TEXT,
+                PRIMARY KEY (conversation_id, plugin_id),
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
                 conversation_id TEXT,
@@ -853,6 +862,55 @@ def set_plugin_enabled(
         "config": next_config,
         "updatedAt": now,
     }
+
+
+def get_conversation_plugins(conversation_id: str) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT plugin_id, enabled, config FROM conversation_plugins WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchall()
+    return [
+        {
+            "plugin_id": row["plugin_id"],
+            "enabled": bool(row["enabled"]),
+            "config": json.loads(row["config"]) if row["config"] else None,
+        }
+        for row in rows
+    ]
+
+
+def set_conversation_plugin_enabled(
+    conversation_id: str,
+    plugin_id: str,
+    enabled: bool,
+    config: dict[str, Any] | None = None,
+) -> None:
+    config_json = json.dumps(config) if config is not None else None
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_plugins (conversation_id, plugin_id, enabled, config)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(conversation_id, plugin_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                config = COALESCE(excluded.config, config)
+            """,
+            (conversation_id, plugin_id, int(enabled), config_json),
+        )
+
+
+def is_plugin_enabled_for_conversation(conversation_id: str, plugin_id: str) -> bool:
+    # Check conversation override first
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT enabled FROM conversation_plugins WHERE conversation_id = ? AND plugin_id = ?",
+            (conversation_id, plugin_id),
+        ).fetchone()
+        if row is not None:
+            return bool(row["enabled"])
+    # Fallback to global setting
+    return is_plugin_enabled(plugin_id)
 
 
 def ensure_system_prompt(name: str, content: str) -> dict[str, Any]:

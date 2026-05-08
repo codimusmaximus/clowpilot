@@ -156,8 +156,17 @@ function EmptyState() {
   );
 }
 
-function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
-  const totalTools = plugins.reduce((sum, plugin) => sum + plugin.tools.length, 0);
+function PluginPanel({
+  plugins,
+  onToggle,
+}: {
+  plugins: PluginStatus[];
+  onToggle: (id: string, enabled: boolean) => void;
+}) {
+  const totalTools = plugins.reduce(
+    (sum, plugin) => sum + (plugin.enabled ? plugin.tools.length : 0),
+    0
+  );
 
   return (
     <div className="border-t border-rule bg-ground-2/25 px-6 py-4">
@@ -166,15 +175,21 @@ function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
           <Plug className="size-3.5 text-ember" strokeWidth={1.6} />
           <span className="smallcaps">plugins</span>
           <span className="font-mono text-[10.5px] text-bone-muted">
-            {plugins.length} loaded · {totalTools} tools
+            {plugins.filter((p) => p.enabled).length} active · {totalTools} tools
           </span>
         </div>
 
         <div className="grid gap-2 md:grid-cols-2">
           {plugins.map((plugin) => (
-            <div
+            <button
               key={plugin.id}
-              className="rounded border border-rule bg-ground/55 p-3"
+              onClick={() => onToggle(plugin.id, !plugin.enabled)}
+              className={cn(
+                "group flex flex-col rounded border p-3 text-left transition-colors",
+                plugin.enabled
+                  ? "border-ember/40 bg-ember-soft/10 hover:border-ember/60"
+                  : "border-rule bg-ground/55 hover:border-rule-strong hover:bg-ground/80"
+              )}
             >
               <div className="flex items-start gap-2">
                 <span
@@ -198,19 +213,21 @@ function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
                 </div>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {plugin.tools.map((tool) => (
-                  <span
-                    key={tool}
-                    className="inline-flex items-center gap-1 rounded border border-rule bg-ground-2/60 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
-                    title={`Slash command: /tool ${tool}`}
-                  >
-                    <Wrench className="size-2.5" strokeWidth={1.5} />
-                    {tool}
-                  </span>
-                ))}
-              </div>
-            </div>
+              {plugin.enabled && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {plugin.tools.map((tool) => (
+                    <span
+                      key={tool}
+                      className="inline-flex items-center gap-1 rounded border border-rule bg-ground-2/60 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
+                      title={`Slash command: /tool ${tool}`}
+                    >
+                      <Wrench className="size-2.5" strokeWidth={1.5} />
+                      {tool}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </button>
           ))}
         </div>
 
@@ -254,10 +271,12 @@ function SlashCommandItems() {
 
 function Composer({ plugins }: { plugins: PluginStatus[] }) {
   const slashCommands = useMemo<Unstable_SlashCommand[]>(() => {
-    return createPluginContextCommands(plugins).map((command) => ({
-      ...command,
-      execute: () => undefined,
-    }));
+    return createPluginContextCommands(plugins.filter((p) => p.enabled)).map(
+      (command) => ({
+        ...command,
+        execute: () => undefined,
+      })
+    );
   }, [plugins]);
 
   const slash = unstable_useSlashCommandAdapter({ commands: slashCommands });
@@ -323,6 +342,10 @@ export function Chat() {
   const createSystemPrompt = useChatStore((s) => s.createSystemPrompt);
   const updateSystemPrompt = useChatStore((s) => s.updateSystemPrompt);
   const isRunning = useChatStore((s) => s.isRunning);
+  
+  const plugins = useChatStore((s) => s.plugins);
+  const togglePlugin = useChatStore((s) => s.togglePlugin);
+
   const activeSystemPrompt =
     systemPrompts.find((prompt) => prompt.id === activeSystemPromptId) ?? null;
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
@@ -330,14 +353,7 @@ export function Chat() {
   const [promptCreating, setPromptCreating] = useState(false);
   const [draftPromptName, setDraftPromptName] = useState("");
   const [draftPromptContent, setDraftPromptContent] = useState("");
-  const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [pluginsOpen, setPluginsOpen] = useState(false);
-
-  useEffect(() => {
-    fetchPlugins()
-      .then(setPlugins)
-      .catch(() => setPlugins([]));
-  }, []);
 
   const openPromptEditor = () => {
     if (!activeSystemPrompt) return;
@@ -433,7 +449,9 @@ export function Chat() {
           </button>
         </header>
 
-        {pluginsOpen && <PluginPanel plugins={plugins} />}
+        {pluginsOpen && (
+          <PluginPanel plugins={plugins} onToggle={togglePlugin} />
+        )}
 
         {promptEditorOpen && activeSystemPrompt && (
           <div className="border-t border-rule bg-ground-2/30 px-6 py-4">

@@ -154,4 +154,33 @@ export async function fetchPlugins(): Promise<PluginStatus[]> {
   return data.plugins;
 }
 
+export async function fetchConversationPlugins(
+  conversationId: string
+): Promise<PluginStatus[]> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/plugins`
+  );
+  if (!res.ok) throw new Error(`conversation plugins fetch failed: ${res.status}`);
+  const data = (await res.json()) as { plugins: PluginStatus[] };
+  return data.plugins;
+}
+
+export async function toggleConversationPlugin(
+  conversationId: string,
+  pluginId: string,
+  enabled: boolean
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(
+      conversationId
+    )}/plugins/${encodeURIComponent(pluginId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }
+  );
+  if (!res.ok) throw new Error(`plugin toggle failed: ${res.status}`);
+}
+
 export const CHAT_URL = `${API_BASE}/api/chat`;
