@@ -58,6 +58,7 @@ class AppMessage(BaseModel):
     role: str
     parts: list[dict[str, Any]]
     createdAt: int
+    parentId: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -68,6 +69,7 @@ class ChatRequest(BaseModel):
 
 class MessagesRequest(BaseModel):
     messages: list[AppMessage]
+    headId: str | None = None
 
 
 class ConversationRequest(BaseModel):
@@ -150,14 +152,17 @@ def put_conversation_system_prompt(conversation_id: str, req: ActiveSystemPrompt
 def get_messages(conversation_id: str):
     if not db.conversation_exists(conversation_id):
         raise HTTPException(404, f"conversation not found: {conversation_id}")
-    return {"messages": db.get_messages(conversation_id)}
+    return {
+        "messages": db.get_messages(conversation_id),
+        "headId": db.get_head_message_id(conversation_id),
+    }
 
 
 @app.put("/api/conversations/{conversation_id}/messages")
 def put_messages(conversation_id: str, req: MessagesRequest):
     if not db.conversation_exists(conversation_id):
         raise HTTPException(404, f"conversation not found: {conversation_id}")
-    db.replace_messages(conversation_id, [m.model_dump() for m in req.messages])
+    db.replace_messages(conversation_id, [m.model_dump() for m in req.messages], req.headId)
     return {"ok": True}
 
 

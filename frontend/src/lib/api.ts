@@ -59,25 +59,26 @@ export async function createConversation(
 
 export async function fetchMessages(
   conversationId: string
-): Promise<AppMessage[]> {
+): Promise<{ messages: AppMessage[]; headId: string | null }> {
   const res = await fetch(
     `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`
   );
   if (!res.ok) throw new Error(`messages fetch failed: ${res.status}`);
-  const data = (await res.json()) as { messages: AppMessage[] };
-  return data.messages;
+  const data = (await res.json()) as { messages: AppMessage[]; headId?: string | null };
+  return { messages: data.messages, headId: data.headId ?? null };
 }
 
 export async function saveMessages(
   conversationId: string,
-  messages: AppMessage[]
+  messages: AppMessage[],
+  headId: string | null,
 ): Promise<void> {
   const res = await fetch(
     `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, headId }),
     }
   );
   if (!res.ok) throw new Error(`messages save failed: ${res.status}`);

@@ -29,6 +29,7 @@ export type AppMessage = {
   role: "user" | "assistant";
   parts: Array<TextPart | ToolCallPart>;
   createdAt: number;
+  parentId: string | null;
 };
 
 export type Conversation = {

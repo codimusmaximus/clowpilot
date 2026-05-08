@@ -138,9 +138,13 @@ def init() -> None:
         }
         if "conversation_id" not in columns:
             conn.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT")
+        if "parent_id" not in columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN parent_id TEXT")
         conversation_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
         }
+        if "head_message_id" not in conversation_columns:
+            conn.execute("ALTER TABLE conversations ADD COLUMN head_message_id TEXT")
         if "system_prompt_id" not in conversation_columns:
             conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt_id TEXT")
         row = conn.execute("SELECT COUNT(*) AS count FROM conversations").fetchone()
@@ -629,7 +633,11 @@ def _title_from_messages(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def replace_messages(conversation_id: str, messages: list[dict[str, Any]]) -> None:
+def replace_messages(
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    head_id: str | None = None,
+) -> None:
     ensure_conversation(conversation_id)
     now = int(time.time() * 1000)
     title = _title_from_messages(messages)
@@ -639,8 +647,8 @@ def replace_messages(conversation_id: str, messages: list[dict[str, Any]]) -> No
         )
         conn.executemany(
             """
-            INSERT INTO messages (id, conversation_id, role, parts, created_at, position)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, conversation_id, role, parts, created_at, position, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -650,24 +658,26 @@ def replace_messages(conversation_id: str, messages: list[dict[str, Any]]) -> No
                     json.dumps(m.get("parts", [])),
                     int(m.get("createdAt", 0)),
                     i,
+                    m.get("parentId"),
                 )
                 for i, m in enumerate(messages)
             ],
         )
+        head_update = head_id or (messages[-1]["id"] if messages else None)
         if title:
             conn.execute(
                 """
                 UPDATE conversations
                 SET title = CASE WHEN title = 'New chat' THEN ? ELSE title END,
-                    updated_at = ?
+                    updated_at = ?, head_message_id = ?
                 WHERE id = ?
                 """,
-                (title, now, conversation_id),
+                (title, now, head_update, conversation_id),
             )
         else:
             conn.execute(
-                "UPDATE conversations SET updated_at = ? WHERE id = ?",
-                (now, conversation_id),
+                "UPDATE conversations SET updated_at = ?, head_message_id = ? WHERE id = ?",
+                (now, head_update, conversation_id),
             )
 
 
@@ -675,22 +685,44 @@ def get_messages(conversation_id: str) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, role, parts, created_at
+            SELECT id, role, parts, created_at, parent_id
             FROM messages
             WHERE conversation_id = ?
             ORDER BY position
             """,
             (conversation_id,),
         ).fetchall()
-    return [
-        {
+    result = []
+    for i, row in enumerate(rows):
+        parent_id = row["parent_id"]
+        # Backfill parentId for legacy messages that predate branch support
+        if parent_id is None and i > 0:
+            parent_id = rows[i - 1]["id"]
+        result.append({
             "id": row["id"],
             "role": row["role"],
             "parts": json.loads(row["parts"]),
             "createdAt": row["created_at"],
-        }
-        for row in rows
-    ]
+            "parentId": parent_id,
+        })
+    return result
+
+
+def get_head_message_id(conversation_id: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT head_message_id FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+    if row and row["head_message_id"]:
+        return str(row["head_message_id"])
+    # Fallback for conversations that predate branch support
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM messages WHERE conversation_id = ? ORDER BY position DESC LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+    return str(row["id"]) if row else None
 
 
 def create_system_prompt(name: str, content: str) -> dict[str, Any]:
