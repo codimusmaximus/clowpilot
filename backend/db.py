@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import struct
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+import sqlite_vec
 
 
 DB_PATH = Path(os.environ.get("SQLITE_DB_PATH", "./copilot.sqlite3")).resolve()
@@ -18,6 +22,9 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -39,7 +46,44 @@ def init() -> None:
                 path TEXT PRIMARY KEY,
                 created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS chunks (
+                id          TEXT PRIMARY KEY,
+                file_path   TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE ON UPDATE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                content     TEXT NOT NULL,
+                metadata    TEXT NOT NULL DEFAULT '{}',
+                embedding   BLOB,
+                UNIQUE(file_path, chunk_index)
+            );
+            CREATE INDEX IF NOT EXISTS chunks_file ON chunks(file_path);
+            """
+        )
+        # Migrate existing chunks table if it lacks ON UPDATE CASCADE
+        chunks_info = conn.execute("PRAGMA foreign_key_list(chunks)").fetchall()
+        has_on_update_cascade = any(
+            row["on_update"] == "CASCADE" and row["table"] == "files"
+            for row in chunks_info
+        )
+        if not has_on_update_cascade and chunks_info:
+            # We need to recreate the table to add ON UPDATE CASCADE
+            conn.executescript(
+                """
+                DROP TABLE chunks;
+                CREATE TABLE chunks (
+                    id          TEXT PRIMARY KEY,
+                    file_path   TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE ON UPDATE CASCADE,
+                    chunk_index INTEGER NOT NULL,
+                    content     TEXT NOT NULL,
+                    metadata    TEXT NOT NULL DEFAULT '{}',
+                    embedding   BLOB,
+                    UNIQUE(file_path, chunk_index)
+                );
+                CREATE INDEX chunks_file ON chunks(file_path);
+                """
+            )
 
+        conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -60,6 +104,13 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS plugin_settings (
+                plugin_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                config TEXT NOT NULL DEFAULT '{}',
+                updated_at REAL NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -99,6 +150,128 @@ def init() -> None:
                 (conversation_id,),
             )
         conn.execute("DELETE FROM messages WHERE conversation_id IS NULL")
+    _backfill_chunks()
+
+
+def _backfill_chunks() -> None:
+    """Index any file that has no chunks yet (handles files written before indexing existed)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT f.path, f.content, f.kind
+            FROM files f
+            LEFT JOIN chunks c ON c.file_path = f.path
+            WHERE c.file_path IS NULL
+            """
+        ).fetchall()
+    for row in rows:
+        index_file(row["path"], row["content"], row["kind"])
+
+
+_EMBED_MODEL = None
+_MAX_INDEX_BYTES = 200_000
+
+
+def _get_embed_model():
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        _EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return _EMBED_MODEL
+
+
+def _embed(texts: list[str]) -> list[list[float]]:
+    return _get_embed_model().encode(texts, normalize_embeddings=True).tolist()
+
+
+def _serialize_vec(v: list[float]) -> bytes:
+    return struct.pack(f"{len(v)}f", *v)
+
+
+def _chunk_text(text: str, size: int = 1000, overlap: int = 150) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(text):
+            break
+        start = end - overlap
+    return chunks
+
+
+def index_file(path: str, content: str, kind: str) -> None:
+    if len(content.encode()) > _MAX_INDEX_BYTES:
+        return
+    chunks = _chunk_text(content)
+    if not chunks:
+        return
+    embeddings = _embed(chunks)
+    with _connect() as conn:
+        conn.execute("DELETE FROM chunks WHERE file_path = ?", (path,))
+        conn.executemany(
+            """
+            INSERT INTO chunks (id, file_path, chunk_index, content, metadata, embedding)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    str(uuid.uuid4()),
+                    path,
+                    i,
+                    chunk,
+                    json.dumps({"kind": kind}),
+                    _serialize_vec(emb),
+                )
+                for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+            ],
+        )
+
+
+def search_chunks(
+    query: str,
+    limit: int = 5,
+    kind_filter: str | None = None,
+) -> list[dict[str, Any]]:
+    query_bytes = _serialize_vec(_embed([query])[0])
+    if kind_filter:
+        sql = """
+            SELECT file_path, chunk_index, content, metadata,
+                   vec_distance_cosine(embedding, ?) AS distance
+            FROM chunks
+            WHERE embedding IS NOT NULL
+              AND json_extract(metadata, '$.kind') = ?
+            ORDER BY distance
+            LIMIT ?
+        """
+        params: tuple = (query_bytes, kind_filter, limit)
+    else:
+        sql = """
+            SELECT file_path, chunk_index, content, metadata,
+                   vec_distance_cosine(embedding, ?) AS distance
+            FROM chunks
+            WHERE embedding IS NOT NULL
+            ORDER BY distance
+            LIMIT ?
+        """
+        params = (query_bytes, limit)
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "file_path": row["file_path"],
+            "chunk_index": row["chunk_index"],
+            "content": row["content"],
+            "metadata": json.loads(row["metadata"]),
+            "score": round(1.0 - float(row["distance"]), 4),
+        }
+        for row in rows
+    ]
 
 
 def upsert_file(path: str, content: str, kind: str) -> dict[str, Any]:
@@ -123,6 +296,7 @@ def upsert_file(path: str, content: str, kind: str) -> dict[str, Any]:
             """,
             (path, content, kind, len(encoded), now),
         )
+    index_file(path, content, kind)
     return {
         "path": path,
         "content": content,
@@ -218,16 +392,26 @@ def delete_path(path: str) -> int:
     return int(file_cursor.rowcount) + int(folder_cursor.rowcount)
 
 
-def move_path(source: str, destination_folder: str) -> dict[str, Any]:
-    """Move a file or folder into destination_folder (empty string = root)."""
+def move_path(source: str, destination: str) -> dict[str, Any]:
+    """Move a file or folder. If destination is an existing folder, moves into it.
+    Otherwise, treats destination as the full target path (rename)."""
     src_rel = source.strip("/")
-    dst_folder = destination_folder.strip("/")
+    dst_rel = destination.strip("/")
 
     if not src_rel:
         return {"error": "source path cannot be empty"}
 
     src_name = Path(src_rel).name
-    new_rel = f"{dst_folder}/{src_name}".strip("/") if dst_folder else src_name
+    
+    # If destination is an existing folder, move INTO it.
+    # Otherwise, treat destination as the NEW PATH.
+    if folder_exists(dst_rel):
+        new_rel = f"{dst_rel}/{src_name}".strip("/") if dst_rel else src_name
+    else:
+        new_rel = dst_rel
+
+    if not new_rel:
+        return {"error": "destination path cannot be empty"}
 
     if src_rel == new_rel:
         return {"error": "source and destination are the same", "path": src_rel}
@@ -245,13 +429,23 @@ def move_path(source: str, destination_folder: str) -> dict[str, Any]:
 
         if conn.execute("SELECT 1 FROM files WHERE path = ?", (new_rel,)).fetchone():
             return {"error": f"destination already exists: {new_rel}"}
-        if conn.execute("SELECT 1 FROM folders WHERE path = ?", (new_rel,)).fetchone():
-            return {"error": f"destination already exists: {new_rel}"}
+        # Only block if we are renaming to a folder name that already exists
+        if not folder_exists(dst_rel) and conn.execute("SELECT 1 FROM folders WHERE path = ?", (new_rel,)).fetchone():
+            return {"error": f"destination already exists as a folder: {new_rel}"}
 
-        for folder in _parent_folders(f"{new_rel}/_"):
+        # Create parent folders for the new location
+        parent_path = "/".join(new_rel.split("/")[:-1])
+        if parent_path:
+            for folder in _parent_folders(f"{new_rel}"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO folders (path, created_at) VALUES (?, ?)",
+                    (folder, now),
+                )
+        elif is_folder:
+            # If it's a folder being moved to root, it needs to be in folders table
             conn.execute(
                 "INSERT OR IGNORE INTO folders (path, created_at) VALUES (?, ?)",
-                (folder, now),
+                (new_rel, now),
             )
 
         moved_files = 0
@@ -607,6 +801,58 @@ def set_active_system_prompt(prompt_id: str) -> None:
             """,
             (prompt_id,),
         )
+
+
+def get_plugin_config(plugin_id: str) -> dict[str, Any]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT config FROM plugin_settings WHERE plugin_id = ?",
+            (plugin_id,),
+        ).fetchone()
+    if row is None:
+        return {}
+    try:
+        value = json.loads(str(row["config"]))
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def is_plugin_enabled(plugin_id: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT enabled FROM plugin_settings WHERE plugin_id = ?",
+            (plugin_id,),
+        ).fetchone()
+    return bool(row and row["enabled"])
+
+
+def set_plugin_enabled(
+    plugin_id: str,
+    enabled: bool,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    current_config = get_plugin_config(plugin_id)
+    next_config = current_config if config is None else config
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO plugin_settings (plugin_id, enabled, config, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(plugin_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                config = excluded.config,
+                updated_at = excluded.updated_at
+            """,
+            (plugin_id, int(enabled), json.dumps(next_config), now),
+        )
+    return {
+        "id": plugin_id,
+        "enabled": enabled,
+        "config": next_config,
+        "updatedAt": now,
+    }
 
 
 def ensure_system_prompt(name: str, content: str) -> dict[str, Any]:

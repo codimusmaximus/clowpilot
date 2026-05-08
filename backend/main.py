@@ -21,6 +21,7 @@ from pydantic import BaseModel
 import tools
 import db
 from agent import SYSTEM_PROMPT, run, split_messages
+from plugins import registry as plugin_registry
 
 load_dotenv()
 
@@ -81,6 +82,11 @@ class SystemPromptRequest(BaseModel):
 
 class ActiveSystemPromptRequest(BaseModel):
     id: str
+
+
+class PluginSettingsRequest(BaseModel):
+    enabled: bool
+    config: dict[str, Any] | None = None
 
 
 @app.post("/api/chat")
@@ -183,6 +189,22 @@ def put_system_prompt(prompt_id: str, req: SystemPromptRequest):
     return prompt
 
 
+# ---------- plugins ----------
+
+
+@app.get("/api/plugins")
+def get_plugins():
+    return {"plugins": plugin_registry.list_plugin_status()}
+
+
+@app.put("/api/plugins/{plugin_id}")
+def put_plugin(plugin_id: str, req: PluginSettingsRequest):
+    plugin_ids = {plugin.id for plugin in plugin_registry.load_plugins()}
+    if plugin_id not in plugin_ids:
+        raise HTTPException(404, f"plugin not found: {plugin_id}")
+    return db.set_plugin_enabled(plugin_id, req.enabled, req.config)
+
+
 # ---------- workspace ----------
 
 
@@ -206,6 +228,11 @@ async def upload(file: UploadFile, folder: str = ""):
     rel = f"{folder.strip('/')}/{name}".strip("/")
     content = (await file.read()).decode("utf-8", errors="replace")
     return db.upsert_file(rel, content, tools._ext_kind(Path(name)))
+
+
+@app.get("/api/search")
+def get_search(q: str, limit: int = 5, kind: str | None = None):
+    return db.search_chunks(q, limit=min(limit, 20), kind_filter=kind)
 
 
 @app.delete("/api/file")

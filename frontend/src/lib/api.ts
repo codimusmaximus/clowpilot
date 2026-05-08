@@ -1,4 +1,10 @@
-import type { AppMessage, Conversation, FileNode, SystemPrompt } from "./types";
+import type {
+  AppMessage,
+  Conversation,
+  FileNode,
+  PluginStatus,
+  SystemPrompt,
+} from "./types";
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -139,6 +145,13 @@ export async function setConversationSystemPrompt(
   );
   if (!res.ok) throw new Error(`conversation prompt select failed: ${res.status}`);
   return res.json();
+}
+
+export async function fetchPlugins(): Promise<PluginStatus[]> {
+  const res = await fetch(`${API_BASE}/api/plugins`);
+  if (!res.ok) throw new Error(`plugins fetch failed: ${res.status}`);
+  const data = (await res.json()) as { plugins: PluginStatus[] };
+  return data.plugins;
 }
 
 export const CHAT_URL = `${API_BASE}/api/chat`;

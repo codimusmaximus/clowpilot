@@ -1,18 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
+  unstable_useSlashCommandAdapter,
   type TextMessagePartComponent,
   type ToolCallMessagePartComponent,
+  type Unstable_SlashCommand,
 } from "@assistant-ui/react";
-import { ArrowUp, ChevronDown, Square, Sparkles } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  Plug,
+  Square,
+  Sparkles,
+  Wrench,
+} from "lucide-react";
 import { Markdown } from "./markdown";
 import { ToolCallCard } from "./tool-call";
 import { useChatStore } from "@/lib/chat-store";
-import type { ToolCallStatus } from "@/lib/types";
+import { fetchPlugins } from "@/lib/api";
+import { createPluginContextCommands } from "@/lib/plugin-context";
+import type { PluginStatus, ToolCallStatus } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 const TextPart: TextMessagePartComponent = ({ text, status }) => {
@@ -145,44 +156,161 @@ function EmptyState() {
   );
 }
 
-function Composer() {
+function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
+  const totalTools = plugins.reduce((sum, plugin) => sum + plugin.tools.length, 0);
+
+  return (
+    <div className="border-t border-rule bg-ground-2/25 px-6 py-4">
+      <div className="mx-auto max-w-[44rem] space-y-3">
+        <div className="flex items-center gap-2">
+          <Plug className="size-3.5 text-ember" strokeWidth={1.6} />
+          <span className="smallcaps">plugins</span>
+          <span className="font-mono text-[10.5px] text-bone-muted">
+            {plugins.length} loaded · {totalTools} tools
+          </span>
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-2">
+          {plugins.map((plugin) => (
+            <div
+              key={plugin.id}
+              className="rounded border border-rule bg-ground/55 p-3"
+            >
+              <div className="flex items-start gap-2">
+                <span
+                  className={cn(
+                    "mt-1 size-1.5 shrink-0 rounded-full",
+                    plugin.enabled ? "bg-ember" : "bg-bone-muted"
+                  )}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-display text-base italic text-bone">
+                      {plugin.name}
+                    </span>
+                    <span className="rounded border border-rule px-1.5 py-0.5 font-mono text-[9.5px] text-bone-muted">
+                      {plugin.type}
+                    </span>
+                  </div>
+                  <div className="truncate font-mono text-[10.5px] text-bone-muted">
+                    {plugin.id}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {plugin.tools.map((tool) => (
+                  <span
+                    key={tool}
+                    className="inline-flex items-center gap-1 rounded border border-rule bg-ground-2/60 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
+                    title={`Slash command: /tool ${tool}`}
+                  >
+                    <Wrench className="size-2.5" strokeWidth={1.5} />
+                    {tool}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="font-mono text-[10.5px] text-bone-muted">
+          Type <span className="text-bone">/plugin</span> or{" "}
+          <span className="text-bone">/tool</span> in the composer to add one as
+          message context.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SlashCommandItems() {
+  return (
+    <ComposerPrimitive.Unstable_TriggerPopoverItems>
+      {(items) => (
+        <div className="max-h-72 min-w-72 overflow-auto rounded border border-rule-strong bg-ground-2 p-1 shadow-2xl">
+          {items.map((item, index) => (
+            <ComposerPrimitive.Unstable_TriggerPopoverItem
+              key={item.id}
+              item={item}
+              index={index}
+              className="flex cursor-pointer flex-col gap-0.5 rounded px-2.5 py-2 text-left data-[highlighted]:bg-ember-soft"
+            >
+              <span className="font-mono text-[11px] text-bone">
+                {item.label}
+              </span>
+              {item.description && (
+                <span className="text-[10.5px] text-bone-muted">
+                  {item.description}
+                </span>
+              )}
+            </ComposerPrimitive.Unstable_TriggerPopoverItem>
+          ))}
+        </div>
+      )}
+    </ComposerPrimitive.Unstable_TriggerPopoverItems>
+  );
+}
+
+function Composer({ plugins }: { plugins: PluginStatus[] }) {
+  const slashCommands = useMemo<Unstable_SlashCommand[]>(() => {
+    return createPluginContextCommands(plugins).map((command) => ({
+      ...command,
+      execute: () => undefined,
+    }));
+  }, [plugins]);
+
+  const slash = unstable_useSlashCommandAdapter({ commands: slashCommands });
+
   return (
     <div className="border-t border-rule bg-ground/95 px-6 py-4 backdrop-blur">
-      <ComposerPrimitive.Root className="mx-auto flex w-full max-w-[44rem] items-end gap-2 rounded border border-rule-strong bg-ground-2/40 px-3 py-2 transition-colors focus-within:border-ember/60">
-        <ComposerPrimitive.Input
-          autoFocus
-          rows={1}
-          placeholder="Ask the studio…"
-          className={cn(
-            "composer-input max-h-40 flex-1 resize-none rounded-none bg-transparent py-1.5 text-sm text-bone placeholder:text-bone-muted focus:outline-none focus-visible:outline-none"
-          )}
-        />
-        <ThreadPrimitive.If running>
-          <ComposerPrimitive.Cancel asChild>
-            <button
-              type="button"
-              aria-label="stop"
-              className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2"
-            >
-              <Square className="size-3" strokeWidth={1.6} fill="currentColor" />
-            </button>
-          </ComposerPrimitive.Cancel>
-        </ThreadPrimitive.If>
-        <ThreadPrimitive.If running={false}>
-          <ComposerPrimitive.Send asChild>
-            <button
-              type="submit"
-              aria-label="send"
-              className="flex size-7 items-center justify-center rounded bg-ember text-ground transition-opacity hover:opacity-90 disabled:opacity-30"
-            >
-              <ArrowUp className="size-3.5" strokeWidth={2} />
-            </button>
-          </ComposerPrimitive.Send>
-        </ThreadPrimitive.If>
-      </ComposerPrimitive.Root>
+      <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+        <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-[44rem] items-end gap-2 rounded border border-rule-strong bg-ground-2/40 px-3 py-2 transition-colors focus-within:border-ember/60">
+          <ComposerPrimitive.Input
+            autoFocus
+            rows={1}
+            placeholder="Ask the studio… type / for plugins and tools"
+            className={cn(
+              "composer-input max-h-40 flex-1 resize-none rounded-none bg-transparent py-1.5 text-sm text-bone placeholder:text-bone-muted focus:outline-none focus-visible:outline-none"
+            )}
+          />
+          <ThreadPrimitive.If running>
+            <ComposerPrimitive.Cancel asChild>
+              <button
+                type="button"
+                aria-label="stop"
+                className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2"
+              >
+                <Square className="size-3" strokeWidth={1.6} fill="currentColor" />
+              </button>
+            </ComposerPrimitive.Cancel>
+          </ThreadPrimitive.If>
+          <ThreadPrimitive.If running={false}>
+            <ComposerPrimitive.Send asChild>
+              <button
+                type="submit"
+                aria-label="send"
+                className="flex size-7 items-center justify-center rounded bg-ember text-ground transition-opacity hover:opacity-90 disabled:opacity-30"
+              >
+                <ArrowUp className="size-3.5" strokeWidth={2} />
+              </button>
+            </ComposerPrimitive.Send>
+          </ThreadPrimitive.If>
+
+          <ComposerPrimitive.Unstable_TriggerPopover
+            char="/"
+            adapter={slash.adapter}
+            className="absolute bottom-full left-0 z-50 mb-2"
+          >
+            <ComposerPrimitive.Unstable_TriggerPopover.Action {...slash.action} />
+            <SlashCommandItems />
+          </ComposerPrimitive.Unstable_TriggerPopover>
+        </ComposerPrimitive.Root>
+      </ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <p className="mx-auto mt-2 max-w-[44rem] text-[10.5px] text-bone-muted">
         <span className="font-mono">⌘↵</span> to send · the assistant uses
-        tools to act on the workspace
+        tools to act on the workspace · <span className="font-mono">/</span>{" "}
+        adds plugin/tool context
       </p>
     </div>
   );
@@ -202,6 +330,14 @@ export function Chat() {
   const [promptCreating, setPromptCreating] = useState(false);
   const [draftPromptName, setDraftPromptName] = useState("");
   const [draftPromptContent, setDraftPromptContent] = useState("");
+  const [plugins, setPlugins] = useState<PluginStatus[]>([]);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
+
+  useEffect(() => {
+    fetchPlugins()
+      .then(setPlugins)
+      .catch(() => setPlugins([]));
+  }, []);
 
   const openPromptEditor = () => {
     if (!activeSystemPrompt) return;
@@ -250,6 +386,29 @@ export function Chat() {
           <span className="flex-1" />
           <button
             type="button"
+            onClick={() => setPluginsOpen((open) => !open)}
+            className={cn(
+              "group flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-left transition-colors",
+              pluginsOpen
+                ? "border-ember/50 bg-ember-soft text-bone"
+                : "border-rule bg-ground-2/45 text-bone-dim hover:border-rule-strong hover:bg-ground-2 hover:text-bone"
+            )}
+          >
+            <Plug className="size-3" strokeWidth={1.6} />
+            <span className="smallcaps text-[9.5px]">plugins</span>
+            <span className="font-mono text-[11px]">
+              {plugins.length} / {plugins.reduce((sum, p) => sum + p.tools.length, 0)}
+            </span>
+            <ChevronDown
+              className={cn(
+                "size-3 shrink-0 transition-transform",
+                pluginsOpen && "rotate-180"
+              )}
+              strokeWidth={1.6}
+            />
+          </button>
+          <button
+            type="button"
             disabled={systemPrompts.length === 0 || isRunning}
             onClick={openPromptEditor}
             className={cn(
@@ -273,6 +432,8 @@ export function Chat() {
             />
           </button>
         </header>
+
+        {pluginsOpen && <PluginPanel plugins={plugins} />}
 
         {promptEditorOpen && activeSystemPrompt && (
           <div className="border-t border-rule bg-ground-2/30 px-6 py-4">
@@ -428,7 +589,7 @@ export function Chat() {
         <div className="h-6" />
       </ThreadPrimitive.Viewport>
 
-      <Composer />
+      <Composer plugins={plugins} />
     </ThreadPrimitive.Root>
   );
 }

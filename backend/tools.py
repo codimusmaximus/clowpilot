@@ -49,6 +49,10 @@ def list_tree(path: str = "") -> dict[str, Any]:
     rel = path.strip("/")
     files = db.list_files()
     folders = db.list_folders()
+    
+    file_paths = {f["path"] for f in files}
+    # Filter out folders that are actually files (due to DB corruption or edge cases)
+    folders = [f for f in folders if f not in file_paths]
     exact = next((f for f in files if f["path"] == rel), None)
     if exact:
         return {
@@ -207,19 +211,21 @@ def replace_file_lines(
 
 
 def move_path(source: str, destination: str = "") -> dict[str, Any]:
-    """Move a file or folder into destination folder (empty string = workspace root)."""
+    """Move a file or folder. If destination is an existing folder, moves into it.
+    Otherwise, treats destination as the full target path (rename)."""
     src = _safe_path(source)
     src_rel = str(src.relative_to(WORKSPACE))
     if src_rel == ".":
         return {"error": "cannot move workspace root"}
 
-    dst_folder = ""
+    dst_rel = ""
     if destination:
         dst = _safe_path(destination)
         dst_rel = str(dst.relative_to(WORKSPACE))
-        dst_folder = "" if dst_rel == "." else dst_rel
+        if dst_rel == ".":
+            dst_rel = ""
 
-    return db.move_path(src_rel, dst_folder)
+    return db.move_path(src_rel, dst_rel)
 
 
 def delete_file(path: str) -> dict[str, Any]:
@@ -267,6 +273,12 @@ def highlight(
     }
 
 
+def search(query: str, limit: int = 5, kind: str | None = None) -> dict[str, Any]:
+    """Semantic search across all indexed workspace files."""
+    results = db.search_chunks(query, limit=min(limit, 20), kind_filter=kind)
+    return {"query": query, "results": results}
+
+
 def snippet(content: str, format: str = "markdown") -> dict[str, Any]:
     """Open an ad-hoc rendered tab in the workspace (markdown or html)."""
     fmt = format.lower()
@@ -291,6 +303,7 @@ TOOLS: dict[str, Any] = {
     "display_file": display_file,
     "highlight": highlight,
     "snippet": snippet,
+    "search": search,
 }
 
 
@@ -385,9 +398,10 @@ TOOL_SCHEMAS = [
     {
         "name": "move_path",
         "description": (
-            "Move a file or folder to a different folder in the workspace. "
-            "Set destination to '' (empty string) to move to the workspace root. "
-            "Moving a folder moves all its contents recursively."
+            "Move a file or folder. If destination is an existing folder, the "
+            "source is moved into it. Otherwise, treats destination as the full "
+            "target path (renaming the source). Moving a folder moves all its "
+            "contents recursively."
         ),
         "input_schema": {
             "type": "object",
@@ -399,7 +413,7 @@ TOOL_SCHEMAS = [
                 "destination": {
                     "type": "string",
                     "description": (
-                        "Target parent folder path. "
+                        "Target parent folder OR full new path. "
                         "Empty string or omit to move to workspace root."
                     ),
                 },
@@ -463,6 +477,33 @@ TOOL_SCHEMAS = [
                 "format": {"type": "string", "enum": ["markdown", "html"]},
             },
             "required": ["content"],
+        },
+    },
+    {
+        "name": "search",
+        "description": (
+            "Semantic search across all workspace files. Returns the most relevant "
+            "chunks with file paths, matching content, and relevance scores. "
+            "Use this to find files related to a topic before reading them. "
+            "Optionally filter by file kind (e.g. 'python', 'markdown', 'json')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (default 5, max 20).",
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Filter to a specific file kind, e.g. 'python' or 'markdown'.",
+                },
+            },
+            "required": ["query"],
         },
     },
 ]

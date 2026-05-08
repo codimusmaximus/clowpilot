@@ -32,127 +32,52 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-import tools
+from plugins import registry as plugin_registry
 
 
 MODEL = os.environ.get("OPENAI_MODEL", "openai:gpt-5.2")
 
-SYSTEM_PROMPT = """You are a workspace copilot embedded in a UI with three panes:
+BASE_SYSTEM_PROMPT = """You are a workspace copilot embedded in a UI with three panes:
 a left sidebar (file tree + threads), a centre chat (this conversation), and a
 right workspace pane (where files and snippets are displayed to the user).
 
-You operate inside a sandboxed virtual file workspace backed by SQLite. Files and
-their contents are stored in the SQLite database, and folders are derived from
-the stored file paths; the local `workspace/` directory is not the source of
-truth. Use the tools to inspect, create, and modify these database-backed files,
-and to project visual artefacts onto the right-hand workspace.
+Use enabled plugin tools to inspect, create, modify, and project artefacts onto
+the right-hand workspace. Plugin instructions below describe the capabilities
+available in this runtime.
 
 Working principles:
-- When the user references files, call `list_tree` to orient yourself before
-  acting, unless you already know the layout from earlier in the conversation.
-- Use `create_folder` when the user asks for empty folders or subfolder
-  structure before files exist. Writing files still creates parent folders.
-- When you want the user to *look* at a file, call `display_file` so it opens
-  in their workspace pane. Don't dump file contents into chat.
-- Use `replace_in_file` or `replace_file_lines` for small targeted edits. Use
-  `write_file` when creating a file or intentionally replacing the full content.
-- Use `delete_file` when the user asks you to remove a file or virtual folder.
-  The tool returns the deleted path or paths after the operation.
-- File CRUD tools return structured results after they run. Create/update/patch
-  results include the stored file content and metadata; delete results include
-  the removed path or paths.
-- Use `highlight` to draw the user's attention to specific line ranges with a
-  comment — this is your primary teaching tool when explaining code or data.
-- Use `snippet` for ad-hoc artefacts: summaries, tables, diagrams (markdown),
-  or rendered HTML you want the user to see without writing to disk.
-- Keep chat replies brief. The workspace is where you show; chat is where you
-  narrate.
+- Prefer tool use over explanation when the user asks you to inspect or change
+  workspace state.
+- Keep chat replies brief and grounded in the artefacts you show.
+- The workspace is where you show; chat is where you narrate.
 """
 
 
-agent = Agent(MODEL)
+def _compose_system_prompt(base_prompt: str = BASE_SYSTEM_PROMPT) -> str:
+    plugin_instructions = plugin_registry.instructions()
+    if not plugin_instructions:
+        return base_prompt
+    return f"{base_prompt}\n\nEnabled plugins:\n\n{plugin_instructions}"
 
 
-@agent.tool_plain
-def list_tree(path: str = "") -> dict[str, Any]:
-    """List the workspace file tree. Use first to understand what files exist
-    before reading or modifying them. `path` is a subdirectory relative to
-    the workspace root; empty means root."""
-    return tools.list_tree(path)
+SYSTEM_PROMPT = _compose_system_prompt(BASE_SYSTEM_PROMPT)
 
 
-@agent.tool_plain
-def create_folder(path: str) -> dict[str, Any]:
-    """Create an empty virtual subfolder in the SQLite-backed workspace."""
-    return tools.create_folder(path)
+def _build_agent() -> Agent:
+    runtime_agent = Agent(MODEL)
 
+    def wrap_handler(handler):
+        def safe_handler(*args, **kwargs):
+            try:
+                return handler(*args, **kwargs)
+            except Exception as e:
+                return f"Tool call failed: {type(e).__name__}: {e}"
 
-@agent.tool_plain
-def read_file(path: str) -> dict[str, Any]:
-    """Read the full contents of a file in the workspace."""
-    return tools.read_file(path)
+        return safe_handler
 
-
-@agent.tool_plain
-def write_file(path: str, content: str, type: str | None = None) -> dict[str, Any]:
-    """Create or overwrite a file in the workspace. Provide the full new
-    contents. Parent folders are created as needed. `type` is an optional
-    language hint (python, markdown, json, etc.)."""
-    return tools.write_file(path, content, type)
-
-
-@agent.tool_plain
-def replace_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
-    """Patch a file by replacing one exact unique text fragment. Use for small
-    targeted edits when you know the old text exactly."""
-    return tools.replace_in_file(path, old_text, new_text)
-
-
-@agent.tool_plain
-def replace_file_lines(
-    path: str,
-    start_line: int,
-    end_line: int,
-    content: str,
-) -> dict[str, Any]:
-    """Patch a file by replacing an inclusive 1-based line range. Use when
-    exact text replacement is ambiguous or line numbers are known."""
-    return tools.replace_file_lines(path, start_line, end_line, content)
-
-
-@agent.tool_plain
-def delete_file(path: str) -> dict[str, Any]:
-    """Delete a file or virtual folder from the SQLite-backed workspace. Returns
-    the deleted path or paths after the operation."""
-    return tools.delete_file(path)
-
-
-@agent.tool_plain
-def display_file(path: str) -> dict[str, Any]:
-    """Open a file as a tab in the user's workspace pane on the right.
-    Use this when you want the user to look at a specific file."""
-    return tools.display_file(path)
-
-
-@agent.tool_plain
-def highlight(
-    path: str,
-    start_line: int,
-    end_line: int,
-    comment: str,
-) -> dict[str, Any]:
-    """Highlight a line range in a file currently shown in the workspace,
-    with a comment pinned to that range. The file should already be displayed
-    (call display_file first if not)."""
-    return tools.highlight(path, start_line, end_line, comment)
-
-
-@agent.tool_plain
-def snippet(content: str, format: str = "markdown") -> dict[str, Any]:
-    """Render an ad-hoc snippet as its own workspace tab. Use for diagrams,
-    summaries, tables, mini-reports — anything you want to show without
-    saving to disk. `format` is 'markdown' or 'html'."""
-    return tools.snippet(content, format)
+    for tool in plugin_registry.tools():
+        runtime_agent.tool_plain(wrap_handler(tool.handler), name=tool.name)
+    return runtime_agent
 
 
 # ---------- protocol ----------
@@ -168,10 +93,12 @@ async def run(
     # index → {"id", "name"} so we can attach deltas to the right tool call
     tool_calls: dict[int, dict[str, str]] = {}
 
-    async for event in agent.run_stream_events(
+    runtime_agent = _build_agent()
+
+    async for event in runtime_agent.run_stream_events(
         prompt,
         message_history=history,
-        instructions=system_prompt or SYSTEM_PROMPT,
+        instructions=_compose_system_prompt(system_prompt or BASE_SYSTEM_PROMPT),
     ):
         if isinstance(event, PartStartEvent):
             part = event.part
@@ -304,14 +231,20 @@ def split_messages(
                             tool_call_id=p["id"],
                         )
                     )
-                    if p.get("result") is not None:
-                        tool_returns.append(
-                            ToolReturnPart(
-                                tool_name=p["name"],
-                                content=p["result"],
-                                tool_call_id=p["id"],
-                            )
+                    
+                    # If the tool call has a result, use it.
+                    # Otherwise, synthesize a failure message so the LLM knows it didn't succeed.
+                    result = p.get("result")
+                    if result is None:
+                        result = f"Tool call failed: '{p['name']}' was interrupted or returned no result."
+                    
+                    tool_returns.append(
+                        ToolReturnPart(
+                            tool_name=p["name"],
+                            content=result,
+                            tool_call_id=p["id"],
                         )
+                    )
             if response_parts:
                 history.append(ModelResponse(parts=response_parts))
             if tool_returns:

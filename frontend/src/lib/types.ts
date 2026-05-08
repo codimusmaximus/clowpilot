@@ -47,6 +47,16 @@ export type SystemPrompt = {
   updatedAt: number;
 };
 
+export type PluginStatus = {
+  id: string;
+  name: string;
+  type: "core" | "external";
+  enabled: boolean;
+  config: Record<string, unknown>;
+  configSchema: Record<string, unknown> | null;
+  tools: string[];
+};
+
 export type FileNode = {
   name: string;
   path: string;
