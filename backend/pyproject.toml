@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "ddgs>=9.14.2",
     "fastapi>=0.136.1",
+    "firecrawl-py>=4.25.2",
     "pydantic-ai-slim[openai,google,mistral]>=1.90.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.27",

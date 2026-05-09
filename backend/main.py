@@ -425,8 +425,8 @@ def _seed_system_prompts():
 
 
 def _seed_plugins():
-    # Ensure core workspace is enabled globally by default
     db.set_plugin_enabled("core.workspace", True)
+    db.set_plugin_enabled("core.websearch", True)
 
 
 _seed()
