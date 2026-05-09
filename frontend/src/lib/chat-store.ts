@@ -59,7 +59,10 @@ type ChatState = {
   send: (text: string, parentId: string | null) => Promise<void>;
   editMessage: (sourceId: string | null, text: string, parentId: string | null) => Promise<void>;
   setHeadId: (headId: string | null) => void;
+  stopGeneration: () => void;
 };
+
+let _abortController: AbortController | null = null;
 
 const newId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -411,6 +414,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setHeadId: (headId) => set({ headId }),
+  stopGeneration: () => { _abortController?.abort(); },
 
   editMessage: async (_sourceId, text, parentId) => {
     await get().send(text, parentId);
@@ -488,10 +492,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
 
     try {
+      _abortController = new AbortController();
       const res = await fetch(CHAT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal: _abortController.signal,
       });
       if (!res.ok || !res.body) throw new Error(`chat failed: ${res.status}`);
 
@@ -522,13 +528,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
     } catch (err) {
-      updateAssistant((m) => {
-        m.parts.push({
-          type: "text",
-          text: `\n\n_⚠ ${(err as Error).message}_`,
+      const aborted = (err as Error).name === "AbortError";
+      if (!aborted) {
+        updateAssistant((m) => {
+          m.parts.push({ type: "text", text: `\n\n_⚠ ${(err as Error).message}_` });
         });
-      });
+      }
     } finally {
+      _abortController = null;
       set({ isRunning: false });
       await saveMessages(conversationId, get().messages, get().headId).catch(() => undefined);
       const { conversations } = await fetchConversations().catch(() => ({

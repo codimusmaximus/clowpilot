@@ -355,6 +355,7 @@ function SlashCommandItems() {
 }
 
 function Composer({ plugins }: { plugins: PluginStatus[] }) {
+  const isRunning = useChatStore((s) => s.isRunning);
   const slashCommands = useMemo<Unstable_SlashCommand[]>(() => {
     return createPluginContextCommands(plugins.filter((p) => p.enabled)).map(
       (command) => ({
@@ -378,18 +379,16 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
               "composer-input max-h-40 flex-1 resize-none rounded-none bg-transparent py-1.5 text-sm text-bone placeholder:text-bone-muted focus:outline-none focus-visible:outline-none"
             )}
           />
-          <ThreadPrimitive.If running>
-            <ComposerPrimitive.Cancel asChild>
-              <button
-                type="button"
-                aria-label="stop"
-                className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2"
-              >
-                <Square className="size-3" strokeWidth={1.6} fill="currentColor" />
-              </button>
-            </ComposerPrimitive.Cancel>
-          </ThreadPrimitive.If>
-          <ThreadPrimitive.If running={false}>
+          {isRunning ? (
+            <button
+              type="button"
+              aria-label="stop"
+              onClick={() => useChatStore.getState().stopGeneration()}
+              className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2 hover:text-bone"
+            >
+              <Square className="size-3" strokeWidth={1.6} fill="currentColor" />
+            </button>
+          ) : (
             <ComposerPrimitive.Send asChild>
               <button
                 type="submit"
@@ -399,7 +398,7 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
                 <ArrowUp className="size-3.5" strokeWidth={2} />
               </button>
             </ComposerPrimitive.Send>
-          </ThreadPrimitive.If>
+          )}
 
           <ComposerPrimitive.Unstable_TriggerPopover
             char="/"

@@ -6,3 +6,6 @@
 # Local SQLite data
 *.sqlite3
 *.sqlite3-*
+
+# Workspace content (user data, not source code)
+backend/workspace/
