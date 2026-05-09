@@ -92,37 +92,30 @@ function applyToolToWorkspace(name: string, result: unknown) {
   const ws = useWorkspace.getState();
 
   switch (name) {
+    // workspace UI tools (new names) + old names for back-compat
+    case "display":
     case "display_file": {
-      const { path, content, kind } = r as {
-        path: string;
-        content: string;
-        kind: string;
-      };
-      const lang = PRINTABLE_LANGS.has(kind) ? kind : "text";
-      ws.openFile(path, content, lang);
+      const { path, content, kind } = r as { path: string; content: string; kind: string };
+      ws.openFile(path, content, PRINTABLE_LANGS.has(kind) ? kind : "text");
       break;
     }
+    case "page_write":
     case "write_file": {
-      const { path, content, kind } = r as {
-        path: string;
-        content: string;
-        kind: string;
-      };
-      const lang = PRINTABLE_LANGS.has(kind) ? kind : "text";
-      ws.openFile(path, content, lang);
+      const { path, content, kind } = r as { path: string; content: string; kind: string };
+      ws.openFile(path, content, PRINTABLE_LANGS.has(kind) ? kind : "text");
       break;
     }
+    case "page_patch":
+    case "page_patch_lines":
     case "replace_in_file":
     case "replace_file_lines": {
-      const { path, content, kind } = r as {
-        path: string;
-        content: string;
-        kind: string;
-      };
-      const lang = PRINTABLE_LANGS.has(kind) ? kind : "text";
-      ws.openFile(path, content, lang);
+      const { path, content, kind } = r as { path: string; content: string; kind: string };
+      if (path && content !== undefined) {
+        ws.openFile(path, content, PRINTABLE_LANGS.has(kind) ? kind : "text");
+      }
       break;
     }
+    case "page_move":
     case "move_path": {
       const { source, destination } = r as { source: string; destination: string };
       const affected = ws.tabs.filter(
@@ -138,6 +131,7 @@ function applyToolToWorkspace(name: string, result: unknown) {
       }
       break;
     }
+    case "page_delete":
     case "delete_file": {
       const deletedPaths = Array.isArray(r.deleted_paths)
         ? r.deleted_paths
