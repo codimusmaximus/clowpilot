@@ -43,13 +43,41 @@ def _ext_kind(path: Path) -> str:
 
 # ---------- tools ----------
 
+def _scan_disk() -> list[dict[str, Any]]:
+    """Walk the real workspace filesystem for files not tracked in the DB."""
+    results = []
+    try:
+        for p in sorted(WORKSPACE.rglob("*")):
+            if any(part.startswith(".") for part in p.relative_to(WORKSPACE).parts):
+                continue
+            if p.is_file():
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                results.append({
+                    "path": str(p.relative_to(WORKSPACE)),
+                    "kind": _ext_kind(p),
+                    "bytes": size,
+                })
+    except Exception:
+        pass
+    return results
+
+
 def list_tree(path: str = "") -> dict[str, Any]:
-    """Return a nested file tree from the SQLite-backed workspace."""
+    """Return a nested file tree merging the SQLite workspace and the real disk."""
     _safe_path(path) if path else WORKSPACE
     rel = path.strip("/")
     files = db.list_files()
     folders = db.list_folders()
-    
+
+    # Merge in any disk files not already tracked in the DB
+    db_paths = {f["path"] for f in files}
+    for disk_file in _scan_disk():
+        if disk_file["path"] not in db_paths:
+            files.append(disk_file)
+
     file_paths = {f["path"] for f in files}
     # Filter out folders that are actually files (due to DB corruption or edge cases)
     folders = [f for f in folders if f not in file_paths]
@@ -138,9 +166,17 @@ def create_folder(path: str) -> dict[str, Any]:
 def read_file(path: str) -> dict[str, Any]:
     rel = str(_safe_path(path).relative_to(WORKSPACE))
     file = db.get_file(rel)
-    if file is None:
-        return {"error": f"file not found: {path}"}
-    return file
+    if file is not None:
+        return file
+    # Fall back to reading directly from disk (file exists on mount but not in DB)
+    disk_path = WORKSPACE / rel
+    if disk_path.exists() and disk_path.is_file():
+        try:
+            content = disk_path.read_text(errors="replace")
+            return {"path": rel, "content": content, "kind": _ext_kind(disk_path), "bytes": len(content.encode())}
+        except Exception as e:
+            return {"error": f"could not read file: {e}"}
+    return {"error": f"file not found: {path}"}
 
 
 def write_file(
