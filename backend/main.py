@@ -20,7 +20,14 @@ from pydantic import BaseModel
 
 import tools
 import db
-from agent import SYSTEM_PROMPT, run, split_messages
+from agent import (
+    BASE_SYSTEM_PROMPT,
+    get_active_model,
+    list_available_models,
+    run,
+    set_active_model,
+    split_messages,
+)
 from plugins import registry as plugin_registry
 
 load_dotenv()
@@ -58,6 +65,7 @@ class AppMessage(BaseModel):
     role: str
     parts: list[dict[str, Any]]
     createdAt: int
+    parentId: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -68,11 +76,22 @@ class ChatRequest(BaseModel):
 
 class MessagesRequest(BaseModel):
     messages: list[AppMessage]
+    headId: str | None = None
 
 
 class ConversationRequest(BaseModel):
     title: str | None = None
     systemPromptId: str | None = None
+    projectId: str | None = None
+
+
+class ProjectRequest(BaseModel):
+    name: str
+    systemPromptId: str | None = None
+
+
+class ConversationProjectRequest(BaseModel):
+    projectId: str | None = None
 
 
 class SystemPromptRequest(BaseModel):
@@ -82,6 +101,10 @@ class SystemPromptRequest(BaseModel):
 
 class ActiveSystemPromptRequest(BaseModel):
     id: str
+
+
+class ActiveModelRequest(BaseModel):
+    model: str
 
 
 class PluginSettingsRequest(BaseModel):
@@ -94,13 +117,17 @@ async def chat(req: ChatRequest):
     raw = [m.model_dump() for m in req.messages]
     prompt, history = split_messages(raw)
     conversation = db.ensure_conversation(req.conversationId)
+    conversation_id = conversation["id"]
     system_prompt_id = req.systemPromptId or conversation.get("systemPromptId")
     system_prompt_row = db.get_system_prompt(system_prompt_id) if system_prompt_id else None
-    system_prompt = system_prompt_row["content"] if system_prompt_row else SYSTEM_PROMPT
+    
+    # We pass None for base_prompt to use the default BASE_SYSTEM_PROMPT
+    # inside agent._compose_system_prompt
+    base_prompt = system_prompt_row["content"] if system_prompt_row else None
 
     async def gen():
         try:
-            async for event in run(prompt, history, system_prompt):
+            async for event in run(prompt, history, conversation_id, base_prompt):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         except Exception as e:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -129,7 +156,25 @@ def post_conversation(req: ConversationRequest):
     prompt_id = req.systemPromptId or db.get_active_system_prompt_id()
     if prompt_id and db.get_system_prompt(prompt_id) is None:
         raise HTTPException(404, f"system prompt not found: {prompt_id}")
-    return db.create_conversation(req.title or "New chat", prompt_id)
+    if req.projectId and db.get_project(req.projectId) is None:
+        raise HTTPException(404, f"project not found: {req.projectId}")
+    return db.create_conversation(req.title or "New chat", prompt_id, req.projectId)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation_endpoint(conversation_id: str):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    db.delete_conversation(conversation_id)
+    return {"ok": True}
+
+
+@app.put("/api/conversations/{conversation_id}/project")
+def put_conversation_project(conversation_id: str, req: ConversationProjectRequest):
+    conversation = db.set_conversation_project(conversation_id, req.projectId)
+    if conversation is None:
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    return conversation
 
 
 @app.put("/api/conversations/{conversation_id}/system-prompt")
@@ -146,20 +191,23 @@ def put_conversation_system_prompt(conversation_id: str, req: ActiveSystemPrompt
 def get_messages(conversation_id: str):
     if not db.conversation_exists(conversation_id):
         raise HTTPException(404, f"conversation not found: {conversation_id}")
-    return {"messages": db.get_messages(conversation_id)}
+    return {
+        "messages": db.get_messages(conversation_id),
+        "headId": db.get_head_message_id(conversation_id),
+    }
 
 
 @app.put("/api/conversations/{conversation_id}/messages")
 def put_messages(conversation_id: str, req: MessagesRequest):
     if not db.conversation_exists(conversation_id):
         raise HTTPException(404, f"conversation not found: {conversation_id}")
-    db.replace_messages(conversation_id, [m.model_dump() for m in req.messages])
+    db.replace_messages(conversation_id, [m.model_dump() for m in req.messages], req.headId)
     return {"ok": True}
 
 
 @app.get("/api/system-prompts")
 def get_system_prompts():
-    prompt = db.ensure_system_prompt("Workspace copilot", SYSTEM_PROMPT)
+    prompt = db.ensure_system_prompt("Workspace copilot", BASE_SYSTEM_PROMPT)
     return {
         "prompts": db.list_system_prompts(),
         "activeSystemPromptId": db.get_active_system_prompt_id() or prompt["id"],
@@ -189,6 +237,49 @@ def put_system_prompt(prompt_id: str, req: SystemPromptRequest):
     return prompt
 
 
+# ---------- models ----------
+
+
+@app.get("/api/models")
+def get_models():
+    return {
+        "models": list_available_models(),
+        "activeModel": get_active_model(),
+    }
+
+
+@app.put("/api/models/active")
+def put_active_model(req: ActiveModelRequest):
+    available = {m["model"] for m in list_available_models()}
+    if req.model not in available:
+        raise HTTPException(400, f"model not available: {req.model}")
+    set_active_model(req.model)
+    return {"ok": True, "activeModel": req.model}
+
+
+# ---------- projects ----------
+
+
+@app.get("/api/projects")
+def get_projects():
+    return {"projects": db.list_projects()}
+
+
+@app.post("/api/projects")
+def post_project(req: ProjectRequest):
+    if req.systemPromptId and db.get_system_prompt(req.systemPromptId) is None:
+        raise HTTPException(404, f"system prompt not found: {req.systemPromptId}")
+    return db.create_project(req.name, req.systemPromptId)
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project_endpoint(project_id: str):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project not found: {project_id}")
+    db.delete_project(project_id)
+    return {"ok": True}
+
+
 # ---------- plugins ----------
 
 
@@ -203,6 +294,28 @@ def put_plugin(plugin_id: str, req: PluginSettingsRequest):
     if plugin_id not in plugin_ids:
         raise HTTPException(404, f"plugin not found: {plugin_id}")
     return db.set_plugin_enabled(plugin_id, req.enabled, req.config)
+
+
+@app.get("/api/conversations/{conversation_id}/plugins")
+def get_conversation_plugins(conversation_id: str):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    return {"plugins": plugin_registry.list_plugin_status(conversation_id)}
+
+
+@app.put("/api/conversations/{conversation_id}/plugins/{plugin_id}")
+def put_conversation_plugin(
+    conversation_id: str, plugin_id: str, req: PluginSettingsRequest
+):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    plugin_ids = {plugin.id for plugin in plugin_registry.load_plugins()}
+    if plugin_id not in plugin_ids:
+        raise HTTPException(404, f"plugin not found: {plugin_id}")
+    db.set_conversation_plugin_enabled(
+        conversation_id, plugin_id, req.enabled, req.config
+    )
+    return {"ok": True}
 
 
 # ---------- workspace ----------
@@ -273,11 +386,11 @@ def _seed():
 SYSTEM_PROMPT_PRESETS = [
     (
         "Workspace copilot",
-        SYSTEM_PROMPT,
+        BASE_SYSTEM_PROMPT,
     ),
     (
         "Concise operator",
-        SYSTEM_PROMPT
+        BASE_SYSTEM_PROMPT
         + "\n\nStyle override:\n"
         + "- Be terse and action-oriented.\n"
         + "- Prefer tool use over explanation when the user asks for changes.\n"
@@ -285,7 +398,7 @@ SYSTEM_PROMPT_PRESETS = [
     ),
     (
         "Careful reviewer",
-        SYSTEM_PROMPT
+        BASE_SYSTEM_PROMPT
         + "\n\nReview mode:\n"
         + "- Prioritize correctness, edge cases, regressions, and missing tests.\n"
         + "- When reviewing, list findings first with file or line references when available.\n"
@@ -293,7 +406,7 @@ SYSTEM_PROMPT_PRESETS = [
     ),
     (
         "Teaching copilot",
-        SYSTEM_PROMPT
+        BASE_SYSTEM_PROMPT
         + "\n\nTeaching mode:\n"
         + "- Explain decisions briefly as you work.\n"
         + "- Use highlights and rendered snippets to make concepts visible.\n"
@@ -311,9 +424,15 @@ def _seed_system_prompts():
             db.set_active_system_prompt(prompt["id"])
 
 
+def _seed_plugins():
+    # Ensure core workspace is enabled globally by default
+    db.set_plugin_enabled("core.workspace", True)
+
+
 _seed()
 _seed_system_prompts()
-db.ensure_system_prompt("Workspace copilot", SYSTEM_PROMPT)
+_seed_plugins()
+db.ensure_system_prompt("Workspace copilot", BASE_SYSTEM_PROMPT)
 
 
 if __name__ == "__main__":

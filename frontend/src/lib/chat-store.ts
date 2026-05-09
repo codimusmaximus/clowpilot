@@ -4,12 +4,18 @@ import { create } from "zustand";
 import {
   CHAT_URL,
   createConversation as createConversationApi,
+  createProject as createProjectApi,
   createSystemPrompt as createSystemPromptApi,
+  deleteConversation as deleteConversationApi,
+  deleteProject as deleteProjectApi,
   fetchConversations,
   fetchFile,
   fetchMessages,
+  fetchModels,
+  fetchProjects,
   fetchSystemPrompts,
   saveMessages,
+  setActiveModel as setActiveModelApi,
   setConversationSystemPrompt,
   updateSystemPrompt as updateSystemPromptApi,
 } from "./api";
@@ -17,6 +23,9 @@ import { useWorkspace } from "./workspace-store";
 import type {
   AppMessage,
   Conversation,
+  ModelInfo,
+  PluginStatus,
+  Project,
   SystemPrompt,
   TextPart,
   ToolCallPart,
@@ -24,18 +33,32 @@ import type {
 
 type ChatState = {
   messages: AppMessage[];
+  headId: string | null;
   conversations: Conversation[];
   activeConversationId: string | null;
   systemPrompts: SystemPrompt[];
   activeSystemPromptId: string | null;
   isRunning: boolean;
+  plugins: PluginStatus[];
+  projects: Project[];
+  models: ModelInfo[];
+  activeModel: string | null;
+  selectModel: (model: string) => Promise<void>;
   load: () => Promise<void>;
-  newConversation: () => Promise<void>;
+  newConversation: (projectId?: string | null) => Promise<void>;
+  newConversationInProject: (projectId: string) => Promise<void>;
+  deleteConversation: (id: string) => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
   selectSystemPrompt: (id: string) => Promise<void>;
   createSystemPrompt: (name: string, content: string) => Promise<void>;
   updateSystemPrompt: (id: string, name: string, content: string) => Promise<void>;
-  send: (text: string) => Promise<void>;
+  fetchPlugins: () => Promise<void>;
+  togglePlugin: (pluginId: string, enabled: boolean) => Promise<void>;
+  createProject: (name: string, systemPromptId?: string | null) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  send: (text: string, parentId: string | null) => Promise<void>;
+  editMessage: (sourceId: string | null, text: string, parentId: string | null) => Promise<void>;
+  setHeadId: (headId: string | null) => void;
 };
 
 const newId = () =>
@@ -185,56 +208,129 @@ function ensureTextPart(parts: AppMessage["parts"]): TextPart {
   return t;
 }
 
+function buildPath(messages: AppMessage[], targetId: string | null): AppMessage[] {
+  if (!targetId) return [];
+  const byId = new Map(messages.map((m) => [m.id, m]));
+  const path: AppMessage[] = [];
+  let current = byId.get(targetId);
+  while (current) {
+    path.unshift(current);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return path;
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
+  headId: null,
   conversations: [],
   activeConversationId: null,
   systemPrompts: [],
   activeSystemPromptId: null,
   isRunning: false,
+  plugins: [],
+  projects: [],
+  models: [],
+  activeModel: null,
+
+  selectModel: async (model) => {
+    await setActiveModelApi(model);
+    set({ activeModel: model });
+  },
 
   load: async () => {
     if (get().isRunning) return;
-    const [{ conversations, activeConversationId }, prompts] = await Promise.all([
-      fetchConversations(),
-      fetchSystemPrompts(),
-    ]);
-    const messages = await fetchMessages(activeConversationId);
+    const [{ conversations, activeConversationId }, prompts, projects, { models, activeModel }] =
+      await Promise.all([
+        fetchConversations(),
+        fetchSystemPrompts(),
+        fetchProjects(),
+        fetchModels(),
+      ]);
+    const { messages, headId } = await fetchMessages(activeConversationId);
     const activeConversation = conversations.find((c) => c.id === activeConversationId);
     set({
       conversations,
       activeConversationId,
       messages,
+      headId,
       systemPrompts: prompts.prompts,
       activeSystemPromptId:
         activeConversation?.systemPromptId ?? prompts.activeSystemPromptId,
+      projects,
+      models,
+      activeModel,
     });
+    await get().fetchPlugins();
   },
 
-  newConversation: async () => {
+  newConversation: async (projectId?: string | null) => {
     if (get().isRunning) return;
     const conversation = await createConversationApi(
       "New chat",
-      get().activeSystemPromptId
+      get().activeSystemPromptId,
+      projectId
     );
     set((s) => ({
       conversations: [conversation, ...s.conversations],
       activeConversationId: conversation.id,
       activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
       messages: [],
+      headId: null,
     }));
+    await get().fetchPlugins();
+  },
+
+  newConversationInProject: async (projectId: string) => {
+    if (get().isRunning) return;
+    const project = get().projects.find((p) => p.id === projectId);
+    const systemPromptId = project?.systemPromptId ?? get().activeSystemPromptId;
+    const conversation = await createConversationApi("New chat", systemPromptId, projectId);
+    set((s) => ({
+      conversations: [conversation, ...s.conversations],
+      activeConversationId: conversation.id,
+      activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
+      messages: [],
+      headId: null,
+    }));
+    await get().fetchPlugins();
+  },
+
+  deleteConversation: async (id: string) => {
+    await deleteConversationApi(id);
+    const s = get();
+    const remaining = s.conversations.filter((c) => c.id !== id);
+    if (s.activeConversationId === id) {
+      const next = remaining[0];
+      if (next) {
+        const { messages, headId } = await fetchMessages(next.id);
+        set({
+          conversations: remaining,
+          activeConversationId: next.id,
+          activeSystemPromptId: next.systemPromptId ?? s.activeSystemPromptId,
+          messages,
+          headId,
+        });
+      } else {
+        set({ conversations: remaining, activeConversationId: null, messages: [], headId: null });
+      }
+    } else {
+      set({ conversations: remaining });
+    }
   },
 
   selectConversation: async (id) => {
     if (get().isRunning || get().activeConversationId === id) return;
-    const messages = await fetchMessages(id);
+    const { messages, headId } = await fetchMessages(id);
     const conversation = get().conversations.find((c) => c.id === id);
     set({
       activeConversationId: id,
       activeSystemPromptId:
         conversation?.systemPromptId ?? get().activeSystemPromptId,
       messages,
+      headId,
     });
+    await get().fetchPlugins();
   },
 
   selectSystemPrompt: async (id) => {
@@ -271,7 +367,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  send: async (text: string) => {
+  fetchPlugins: async () => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    try {
+      const { fetchConversationPlugins } = await import("./api");
+      const plugins = await fetchConversationPlugins(conversationId);
+      set({ plugins });
+    } catch (err) {
+      console.error("fetchPlugins failed", err);
+    }
+  },
+
+  togglePlugin: async (pluginId, enabled) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    try {
+      const { toggleConversationPlugin } = await import("./api");
+      await toggleConversationPlugin(conversationId, pluginId, enabled);
+      set((s) => ({
+        plugins: s.plugins.map((p) =>
+          p.id === pluginId ? { ...p, enabled } : p
+        ),
+      }));
+    } catch (err) {
+      console.error("togglePlugin failed", err);
+    }
+  },
+
+  createProject: async (name, systemPromptId) => {
+    const project = await createProjectApi(name, systemPromptId);
+    set((s) => ({ projects: [...s.projects, project] }));
+  },
+
+  deleteProject: async (id) => {
+    await deleteProjectApi(id);
+    set((s) => ({
+      projects: s.projects.filter((p) => p.id !== id),
+      conversations: s.conversations.map((c) =>
+        c.projectId === id ? { ...c, projectId: null } : c
+      ),
+    }));
+  },
+
+  setHeadId: (headId) => set({ headId }),
+
+  editMessage: async (_sourceId, text, parentId) => {
+    await get().send(text, parentId);
+  },
+
+  send: async (text: string, parentId: string | null) => {
     if (!text.trim() || get().isRunning) return;
     let conversationId = get().activeConversationId;
     if (!conversationId) {
@@ -292,41 +437,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: "user",
       parts: [{ type: "text", text }],
       createdAt: Date.now(),
+      parentId,
     };
     const assistantMsg: AppMessage = {
       id: newId(),
       role: "assistant",
       parts: [],
       createdAt: Date.now(),
+      parentId: userMsg.id,
     };
 
     set((s) => ({
       messages: [...s.messages, userMsg, assistantMsg],
+      headId: assistantMsg.id,
       isRunning: true,
     }));
 
+    const historyPath = buildPath(get().messages, parentId);
     const payload = {
       conversationId,
       systemPromptId: get().activeSystemPromptId,
-      messages: [...get().messages]
-        .filter((m) => m.id !== assistantMsg.id)
-        .map((m) => ({
-          role: m.role,
-          content:
-            m.role === "user" && m.parts.length === 1 && m.parts[0].type === "text"
-              ? m.parts[0].text
-              : m.parts.map((p) =>
-                  p.type === "text"
-                    ? { type: "text", text: p.text }
-                    : {
-                        type: "tool-call",
-                        id: p.toolCallId,
-                        name: p.toolName,
-                        input: p.args ?? {},
-                        result: p.result ?? null,
-                      }
-                ),
-        })),
+      messages: [...historyPath, userMsg].map((m) => ({
+        role: m.role,
+        content:
+          m.role === "user" && m.parts.length === 1 && m.parts[0].type === "text"
+            ? m.parts[0].text
+            : m.parts.map((p) =>
+                p.type === "text"
+                  ? { type: "text", text: p.text }
+                  : {
+                      type: "tool-call",
+                      id: p.toolCallId,
+                      name: p.toolName,
+                      input: p.args ?? {},
+                      result: p.result ?? null,
+                    }
+              ),
+      })),
     };
 
     const updateAssistant = (mut: (m: AppMessage) => void) => {
@@ -383,7 +530,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     } finally {
       set({ isRunning: false });
-      await saveMessages(conversationId, get().messages).catch(() => undefined);
+      await saveMessages(conversationId, get().messages, get().headId).catch(() => undefined);
       const { conversations } = await fetchConversations().catch(() => ({
         conversations: get().conversations,
       }));
@@ -475,6 +622,12 @@ function handleEvent(
           text: `\n\n_⚠ ${event.message}_`,
         });
       });
+      break;
+    }
+    case "model-switch": {
+      // Backend auto-switched providers due to quota; update the active model in state
+      const to = String(event.to ?? "");
+      if (to) useChatStore.setState({ activeModel: to });
       break;
     }
     case "done":

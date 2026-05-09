@@ -5,6 +5,8 @@ import {
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
+  ActionBarPrimitive,
+  BranchPickerPrimitive,
   unstable_useSlashCommandAdapter,
   type TextMessagePartComponent,
   type ToolCallMessagePartComponent,
@@ -13,6 +15,9 @@ import {
 import {
   ArrowUp,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Pencil,
   Plug,
   Square,
   Sparkles,
@@ -75,18 +80,97 @@ const partsConfig = {
   tools: { Fallback: ToolFallback },
 } as const;
 
+function BranchNav() {
+  return (
+    <BranchPickerPrimitive.Root
+      hideWhenSingleBranch
+      className="mt-2 flex items-center gap-0.5 text-bone-muted"
+    >
+      <BranchPickerPrimitive.Previous asChild>
+        <button
+          type="button"
+          className="rounded p-0.5 hover:bg-ground-2 hover:text-bone disabled:opacity-30"
+        >
+          <ChevronLeft className="size-3" strokeWidth={1.6} />
+        </button>
+      </BranchPickerPrimitive.Previous>
+      <span className="font-mono text-[10px] tabular-nums">
+        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+      </span>
+      <BranchPickerPrimitive.Next asChild>
+        <button
+          type="button"
+          className="rounded p-0.5 hover:bg-ground-2 hover:text-bone disabled:opacity-30"
+        >
+          <ChevronRight className="size-3" strokeWidth={1.6} />
+        </button>
+      </BranchPickerPrimitive.Next>
+    </BranchPickerPrimitive.Root>
+  );
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root asChild>
-      <div className="group mx-auto flex w-full max-w-[44rem] gap-3 px-6 py-4">
+      <div className="group mx-auto flex w-full max-w-[44rem] items-start gap-3 px-6 py-4">
         <div className="mt-1 shrink-0">
           <span className="smallcaps">you</span>
         </div>
         <div className="flex-1 overflow-x-auto text-bone">
           <MessagePrimitive.Parts components={partsConfig} />
+          <BranchNav />
         </div>
+        <ActionBarPrimitive.Root
+          hideWhenRunning
+          autohide="always"
+          className="mt-0.5 flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100 data-[floating]:opacity-100"
+        >
+          <ActionBarPrimitive.Edit asChild>
+            <button
+              type="button"
+              aria-label="edit message"
+              className="rounded p-1 text-bone-muted hover:bg-ground-2 hover:text-bone"
+            >
+              <Pencil className="size-3" strokeWidth={1.6} />
+            </button>
+          </ActionBarPrimitive.Edit>
+        </ActionBarPrimitive.Root>
       </div>
     </MessagePrimitive.Root>
+  );
+}
+
+function EditComposer() {
+  return (
+    <div className="mx-auto flex w-full max-w-[44rem] items-start gap-3 px-6 py-4">
+      <div className="mt-1 shrink-0">
+        <span className="smallcaps">you</span>
+      </div>
+      <div className="flex-1 min-w-0 flex flex-col gap-2 rounded border border-ember/50 bg-ground-2/40 px-3 py-2 focus-within:border-ember/70">
+        <ComposerPrimitive.Input
+          rows={1}
+          className="max-h-40 resize-none bg-transparent py-1 text-sm text-bone placeholder:text-bone-muted focus:outline-none"
+        />
+        <div className="flex justify-end gap-2">
+          <ComposerPrimitive.Cancel asChild>
+            <button
+              type="button"
+              className="rounded px-3 py-1 text-[11px] text-bone-muted hover:bg-ground-2 hover:text-bone"
+            >
+              cancel
+            </button>
+          </ComposerPrimitive.Cancel>
+          <ComposerPrimitive.Send asChild>
+            <button
+              type="submit"
+              className="rounded bg-ember px-3 py-1 text-[11px] text-ground hover:opacity-90"
+            >
+              save
+            </button>
+          </ComposerPrimitive.Send>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -99,6 +183,7 @@ function AssistantMessage() {
         </div>
         <div className="flex-1 min-w-0 overflow-x-auto text-bone">
           <MessagePrimitive.Parts components={partsConfig} />
+          <BranchNav />
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -156,8 +241,17 @@ function EmptyState() {
   );
 }
 
-function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
-  const totalTools = plugins.reduce((sum, plugin) => sum + plugin.tools.length, 0);
+function PluginPanel({
+  plugins,
+  onToggle,
+}: {
+  plugins: PluginStatus[];
+  onToggle: (id: string, enabled: boolean) => void;
+}) {
+  const totalTools = plugins.reduce(
+    (sum, plugin) => sum + (plugin.enabled ? plugin.tools.length : 0),
+    0
+  );
 
   return (
     <div className="border-t border-rule bg-ground-2/25 px-6 py-4">
@@ -166,15 +260,21 @@ function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
           <Plug className="size-3.5 text-ember" strokeWidth={1.6} />
           <span className="smallcaps">plugins</span>
           <span className="font-mono text-[10.5px] text-bone-muted">
-            {plugins.length} loaded · {totalTools} tools
+            {plugins.filter((p) => p.enabled).length} active · {totalTools} tools
           </span>
         </div>
 
         <div className="grid gap-2 md:grid-cols-2">
           {plugins.map((plugin) => (
-            <div
+            <button
               key={plugin.id}
-              className="rounded border border-rule bg-ground/55 p-3"
+              onClick={() => onToggle(plugin.id, !plugin.enabled)}
+              className={cn(
+                "group flex flex-col rounded border p-3 text-left transition-colors",
+                plugin.enabled
+                  ? "border-ember/40 bg-ember-soft/10 hover:border-ember/60"
+                  : "border-rule bg-ground/55 hover:border-rule-strong hover:bg-ground/80"
+              )}
             >
               <div className="flex items-start gap-2">
                 <span
@@ -198,19 +298,21 @@ function PluginPanel({ plugins }: { plugins: PluginStatus[] }) {
                 </div>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {plugin.tools.map((tool) => (
-                  <span
-                    key={tool}
-                    className="inline-flex items-center gap-1 rounded border border-rule bg-ground-2/60 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
-                    title={`Slash command: /tool ${tool}`}
-                  >
-                    <Wrench className="size-2.5" strokeWidth={1.5} />
-                    {tool}
-                  </span>
-                ))}
-              </div>
-            </div>
+              {plugin.enabled && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {plugin.tools.map((tool) => (
+                    <span
+                      key={tool}
+                      className="inline-flex items-center gap-1 rounded border border-rule bg-ground-2/60 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
+                      title={`Slash command: /tool ${tool}`}
+                    >
+                      <Wrench className="size-2.5" strokeWidth={1.5} />
+                      {tool}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </button>
           ))}
         </div>
 
@@ -254,10 +356,12 @@ function SlashCommandItems() {
 
 function Composer({ plugins }: { plugins: PluginStatus[] }) {
   const slashCommands = useMemo<Unstable_SlashCommand[]>(() => {
-    return createPluginContextCommands(plugins).map((command) => ({
-      ...command,
-      execute: () => undefined,
-    }));
+    return createPluginContextCommands(plugins.filter((p) => p.enabled)).map(
+      (command) => ({
+        ...command,
+        execute: () => undefined,
+      })
+    );
   }, [plugins]);
 
   const slash = unstable_useSlashCommandAdapter({ commands: slashCommands });
@@ -323,6 +427,10 @@ export function Chat() {
   const createSystemPrompt = useChatStore((s) => s.createSystemPrompt);
   const updateSystemPrompt = useChatStore((s) => s.updateSystemPrompt);
   const isRunning = useChatStore((s) => s.isRunning);
+  
+  const plugins = useChatStore((s) => s.plugins);
+  const togglePlugin = useChatStore((s) => s.togglePlugin);
+
   const activeSystemPrompt =
     systemPrompts.find((prompt) => prompt.id === activeSystemPromptId) ?? null;
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
@@ -330,14 +438,7 @@ export function Chat() {
   const [promptCreating, setPromptCreating] = useState(false);
   const [draftPromptName, setDraftPromptName] = useState("");
   const [draftPromptContent, setDraftPromptContent] = useState("");
-  const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [pluginsOpen, setPluginsOpen] = useState(false);
-
-  useEffect(() => {
-    fetchPlugins()
-      .then(setPlugins)
-      .catch(() => setPlugins([]));
-  }, []);
 
   const openPromptEditor = () => {
     if (!activeSystemPrompt) return;
@@ -433,7 +534,9 @@ export function Chat() {
           </button>
         </header>
 
-        {pluginsOpen && <PluginPanel plugins={plugins} />}
+        {pluginsOpen && (
+          <PluginPanel plugins={plugins} onToggle={togglePlugin} />
+        )}
 
         {promptEditorOpen && activeSystemPrompt && (
           <div className="border-t border-rule bg-ground-2/30 px-6 py-4">
@@ -582,7 +685,7 @@ export function Chat() {
           components={{
             UserMessage,
             AssistantMessage,
-            EditComposer: () => null,
+            EditComposer,
           }}
         />
 

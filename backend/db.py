@@ -84,13 +84,24 @@ def init() -> None:
 
         conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS conversations (
+            CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
+                name TEXT NOT NULL,
                 system_prompt_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY (system_prompt_id) REFERENCES system_prompts(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                system_prompt_id TEXT,
+                project_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (system_prompt_id) REFERENCES system_prompts(id) ON DELETE SET NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS system_prompts (
@@ -113,6 +124,15 @@ def init() -> None:
                 updated_at REAL NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS conversation_plugins (
+                conversation_id TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                config TEXT,
+                PRIMARY KEY (conversation_id, plugin_id),
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
                 conversation_id TEXT,
@@ -129,11 +149,17 @@ def init() -> None:
         }
         if "conversation_id" not in columns:
             conn.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT")
+        if "parent_id" not in columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN parent_id TEXT")
         conversation_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
         }
+        if "head_message_id" not in conversation_columns:
+            conn.execute("ALTER TABLE conversations ADD COLUMN head_message_id TEXT")
         if "system_prompt_id" not in conversation_columns:
             conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt_id TEXT")
+        if "project_id" not in conversation_columns:
+            conn.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT")
         row = conn.execute("SELECT COUNT(*) AS count FROM conversations").fetchone()
         if int(row["count"]) == 0:
             conversation_id = str(uuid.uuid4())
@@ -499,21 +525,23 @@ def list_paths_under(path: str) -> list[str]:
 def create_conversation(
     title: str = "New chat",
     system_prompt_id: str | None = None,
+    project_id: str | None = None,
 ) -> dict[str, Any]:
     conversation_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO conversations (id, title, system_prompt_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO conversations (id, title, system_prompt_id, project_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (conversation_id, title, system_prompt_id, now, now),
+            (conversation_id, title, system_prompt_id, project_id, now, now),
         )
     return {
         "id": conversation_id,
         "title": title,
         "systemPromptId": system_prompt_id,
+        "projectId": project_id,
         "createdAt": now,
         "updatedAt": now,
     }
@@ -523,7 +551,7 @@ def list_conversations() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, title, system_prompt_id, created_at, updated_at
+            SELECT id, title, system_prompt_id, project_id, created_at, updated_at
             FROM conversations
             ORDER BY updated_at DESC
             """
@@ -533,6 +561,7 @@ def list_conversations() -> list[dict[str, Any]]:
             "id": row["id"],
             "title": row["title"],
             "systemPromptId": row["system_prompt_id"],
+            "projectId": row["project_id"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -553,7 +582,7 @@ def ensure_conversation(conversation_id: str | None = None) -> dict[str, Any]:
         with _connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, title, system_prompt_id, created_at, updated_at
+                SELECT id, title, system_prompt_id, project_id, created_at, updated_at
                 FROM conversations
                 WHERE id = ?
                 """,
@@ -563,6 +592,7 @@ def ensure_conversation(conversation_id: str | None = None) -> dict[str, Any]:
             "id": row["id"],
             "title": row["title"],
             "systemPromptId": row["system_prompt_id"],
+            "projectId": row["project_id"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -570,6 +600,95 @@ def ensure_conversation(conversation_id: str | None = None) -> dict[str, Any]:
     if conversations:
         return conversations[0]
     return create_conversation()
+
+
+def delete_conversation(conversation_id: str) -> bool:
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    return cursor.rowcount > 0
+
+
+def set_conversation_project(
+    conversation_id: str,
+    project_id: str | None,
+) -> dict[str, Any] | None:
+    now = int(time.time() * 1000)
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
+            (project_id, now, conversation_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT id, title, system_prompt_id, project_id, created_at, updated_at FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "systemPromptId": row["system_prompt_id"],
+        "projectId": row["project_id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def create_project(name: str, system_prompt_id: str | None = None) -> dict[str, Any]:
+    project_id = str(uuid.uuid4())
+    now = int(time.time() * 1000)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO projects (id, name, system_prompt_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (project_id, name, system_prompt_id, now, now),
+        )
+    return {
+        "id": project_id,
+        "name": name,
+        "systemPromptId": system_prompt_id,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_projects() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, system_prompt_id, created_at, updated_at FROM projects ORDER BY created_at ASC"
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "systemPromptId": row["system_prompt_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_project(project_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, system_prompt_id, created_at, updated_at FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "systemPromptId": row["system_prompt_id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def delete_project(project_id: str) -> bool:
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    return cursor.rowcount > 0
 
 
 def set_conversation_system_prompt(
@@ -588,7 +707,7 @@ def set_conversation_system_prompt(
         )
         row = conn.execute(
             """
-            SELECT id, title, system_prompt_id, created_at, updated_at
+            SELECT id, title, system_prompt_id, project_id, created_at, updated_at
             FROM conversations
             WHERE id = ?
             """,
@@ -600,6 +719,7 @@ def set_conversation_system_prompt(
         "id": row["id"],
         "title": row["title"],
         "systemPromptId": row["system_prompt_id"],
+        "projectId": row["project_id"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
@@ -620,7 +740,11 @@ def _title_from_messages(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def replace_messages(conversation_id: str, messages: list[dict[str, Any]]) -> None:
+def replace_messages(
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    head_id: str | None = None,
+) -> None:
     ensure_conversation(conversation_id)
     now = int(time.time() * 1000)
     title = _title_from_messages(messages)
@@ -630,8 +754,8 @@ def replace_messages(conversation_id: str, messages: list[dict[str, Any]]) -> No
         )
         conn.executemany(
             """
-            INSERT INTO messages (id, conversation_id, role, parts, created_at, position)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, conversation_id, role, parts, created_at, position, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -641,24 +765,26 @@ def replace_messages(conversation_id: str, messages: list[dict[str, Any]]) -> No
                     json.dumps(m.get("parts", [])),
                     int(m.get("createdAt", 0)),
                     i,
+                    m.get("parentId"),
                 )
                 for i, m in enumerate(messages)
             ],
         )
+        head_update = head_id or (messages[-1]["id"] if messages else None)
         if title:
             conn.execute(
                 """
                 UPDATE conversations
                 SET title = CASE WHEN title = 'New chat' THEN ? ELSE title END,
-                    updated_at = ?
+                    updated_at = ?, head_message_id = ?
                 WHERE id = ?
                 """,
-                (title, now, conversation_id),
+                (title, now, head_update, conversation_id),
             )
         else:
             conn.execute(
-                "UPDATE conversations SET updated_at = ? WHERE id = ?",
-                (now, conversation_id),
+                "UPDATE conversations SET updated_at = ?, head_message_id = ? WHERE id = ?",
+                (now, head_update, conversation_id),
             )
 
 
@@ -666,22 +792,44 @@ def get_messages(conversation_id: str) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, role, parts, created_at
+            SELECT id, role, parts, created_at, parent_id
             FROM messages
             WHERE conversation_id = ?
             ORDER BY position
             """,
             (conversation_id,),
         ).fetchall()
-    return [
-        {
+    result = []
+    for i, row in enumerate(rows):
+        parent_id = row["parent_id"]
+        # Backfill parentId for legacy messages that predate branch support
+        if parent_id is None and i > 0:
+            parent_id = rows[i - 1]["id"]
+        result.append({
             "id": row["id"],
             "role": row["role"],
             "parts": json.loads(row["parts"]),
             "createdAt": row["created_at"],
-        }
-        for row in rows
-    ]
+            "parentId": parent_id,
+        })
+    return result
+
+
+def get_head_message_id(conversation_id: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT head_message_id FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+    if row and row["head_message_id"]:
+        return str(row["head_message_id"])
+    # Fallback for conversations that predate branch support
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM messages WHERE conversation_id = ? ORDER BY position DESC LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+    return str(row["id"]) if row else None
 
 
 def create_system_prompt(name: str, content: str) -> dict[str, Any]:
@@ -853,6 +1001,55 @@ def set_plugin_enabled(
         "config": next_config,
         "updatedAt": now,
     }
+
+
+def get_conversation_plugins(conversation_id: str) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT plugin_id, enabled, config FROM conversation_plugins WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchall()
+    return [
+        {
+            "plugin_id": row["plugin_id"],
+            "enabled": bool(row["enabled"]),
+            "config": json.loads(row["config"]) if row["config"] else None,
+        }
+        for row in rows
+    ]
+
+
+def set_conversation_plugin_enabled(
+    conversation_id: str,
+    plugin_id: str,
+    enabled: bool,
+    config: dict[str, Any] | None = None,
+) -> None:
+    config_json = json.dumps(config) if config is not None else None
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_plugins (conversation_id, plugin_id, enabled, config)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(conversation_id, plugin_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                config = COALESCE(excluded.config, config)
+            """,
+            (conversation_id, plugin_id, int(enabled), config_json),
+        )
+
+
+def is_plugin_enabled_for_conversation(conversation_id: str, plugin_id: str) -> bool:
+    # Check conversation override first
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT enabled FROM conversation_plugins WHERE conversation_id = ? AND plugin_id = ?",
+            (conversation_id, plugin_id),
+        ).fetchone()
+        if row is not None:
+            return bool(row["enabled"])
+    # Fallback to global setting
+    return is_plugin_enabled(plugin_id)
 
 
 def ensure_system_prompt(name: str, content: str) -> dict[str, Any]:
