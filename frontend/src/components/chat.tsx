@@ -326,7 +326,7 @@ export function Chat() {
   const toggleRight = useUIStore((s) => s.toggleRight);
 
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-ground">
+    <ThreadPrimitive.Root className="flex h-full w-full min-h-0 flex-col bg-ground">
       <header className="shrink-0 border-b border-rule flex items-center gap-3 px-6 py-3.5">
         <span className="size-1.5 rounded-full bg-ember" />
         <span className="font-display text-base italic text-bone">studio</span>

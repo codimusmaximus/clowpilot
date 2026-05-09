@@ -20,8 +20,13 @@ const instrument = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "Studio · copilot",
+  title: "Studio",
   description: "Editorial-lab copilot UI built with assistant-ui + FastAPI",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

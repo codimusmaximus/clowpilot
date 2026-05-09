@@ -28,7 +28,7 @@ export function LayoutShell() {
         {rightOpen ? (
           <ResizableSplit left={<Chat />} right={<Workspace />} />
         ) : (
-          <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className="h-full min-w-0 flex-1 overflow-hidden">
             <Chat />
           </div>
         )}
