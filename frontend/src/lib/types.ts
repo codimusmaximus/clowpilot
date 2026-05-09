@@ -29,11 +29,21 @@ export type AppMessage = {
   role: "user" | "assistant";
   parts: Array<TextPart | ToolCallPart>;
   createdAt: number;
+  parentId: string | null;
 };
 
 export type Conversation = {
   id: string;
   title: string;
+  systemPromptId: string | null;
+  projectId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type Project = {
+  id: string;
+  name: string;
   systemPromptId: string | null;
   createdAt: number;
   updatedAt: number;
@@ -45,6 +55,12 @@ export type SystemPrompt = {
   content: string;
   createdAt: number;
   updatedAt: number;
+};
+
+export type ModelInfo = {
+  id: string;
+  name: string;
+  model: string;
 };
 
 export type PluginStatus = {
