@@ -13,7 +13,7 @@ import { fetchFile } from "@/lib/api";
 type MdastNode = { type: string; value?: string; children?: MdastNode[]; url?: string; title?: string | null };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const remarkWikiLinks = () => (tree: any) => walkNode(tree);
+export const remarkWikiLinks = () => (tree: any) => walkNode(tree);
 
 function walkNode(parent: MdastNode) {
   if (!parent.children) return;
@@ -43,11 +43,12 @@ function splitWikiLinks(text: string): MdastNode[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) nodes.push({ type: "text", value: text.slice(last, m.index) });
+    const [path, alias] = m[1].split("|");
     nodes.push({
       type: "link",
-      url: m[1],
+      url: path.trim(),
       title: null,
-      children: [{ type: "text", value: m[1] }],
+      children: [{ type: "text", value: (alias ?? path).trim() }],
     });
     last = m.index + m[0].length;
   }
@@ -65,7 +66,7 @@ function isWorkspacePath(href: string | undefined, text: string): string | null 
   return null;
 }
 
-function WorkspaceAnchor({
+export function WorkspaceAnchor({
   href,
   children,
 }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { children?: React.ReactNode }) {

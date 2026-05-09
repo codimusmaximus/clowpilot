@@ -372,6 +372,19 @@ def get_search(q: str, limit: int = 5, kind: str | None = None):
     return db.search_chunks(q, limit=min(limit, 20), kind_filter=kind)
 
 
+class FileWriteRequest(BaseModel):
+    path: str
+    content: str
+
+
+@app.put("/api/file")
+def put_file(req: FileWriteRequest):
+    result = tools.write_file(req.path, req.content)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
 @app.delete("/api/file")
 def delete_file(path: str):
     rel = str(tools._safe_path(path).relative_to(tools.WORKSPACE))

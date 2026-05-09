@@ -272,6 +272,9 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
             autoFocus
             rows={1}
             placeholder="Ask the studio… type / for plugins and tools"
+            data-gramm="false"
+            data-gramm_editor="false"
+            data-enable-grammarly="false"
             className={cn(
               "composer-input max-h-40 flex-1 resize-none rounded-none bg-transparent py-1.5 text-sm text-bone placeholder:text-bone-muted focus:outline-none focus-visible:outline-none"
             )}

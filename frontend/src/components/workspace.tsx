@@ -1,7 +1,7 @@
 "use client";
 
-import { createElement, useEffect, useMemo, useRef, useState } from "react";
-import { X, FileText, Sparkles, PanelRight } from "lucide-react";
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { X, FileText, Sparkles, PanelRight, ChevronRight, Save } from "lucide-react";
 import { useUIStore } from "@/lib/ui-store";
 import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspace-store";
@@ -11,6 +11,8 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import type { Components } from "react-markdown";
+import { remarkWikiLinks, WorkspaceAnchor } from "./markdown";
+import { saveFile } from "@/lib/api";
 
 function tabTitle(tab: Tab) {
   if (tab.kind === "file") return tab.path.split("/").pop() ?? tab.path;
@@ -144,42 +146,52 @@ function FileViewer({
   const [mode, setMode] = useState<"raw" | "rendered">(
     canRender ? "rendered" : "raw"
   );
+  const [draft, setDraft] = useState(tab.content);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const updateFileContent = useWorkspace((s) => s.updateFileContent);
+  const savedRef = useRef(tab.content);
 
-  // Build per-line highlight info
-  const byLine = useMemo(() => {
-    const map = new Map<number, Highlight[]>();
-    for (const h of highlights) {
-      for (let l = h.startLine; l <= h.endLine; l++) {
-        const arr = map.get(l) ?? [];
-        arr.push(h);
-        map.set(l, arr);
-      }
-    }
-    return map;
-  }, [highlights]);
-
-  // Map highlight start lines to comments aligned to their first line
-  const startLines = useMemo(() => {
-    const map = new Map<number, Highlight[]>();
-    for (const h of highlights) {
-      const arr = map.get(h.startLine) ?? [];
-      arr.push(h);
-      map.set(h.startLine, arr);
-    }
-    return map;
-  }, [highlights]);
-
-  // Track refs to lines so the comment column can absolute-position alongside
-  const containerRef = useRef<HTMLDivElement>(null);
-  const lineRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
-
-  // scroll most-recent highlight into view
+  // Sync draft when the tab content changes externally (e.g. assistant edits)
   useEffect(() => {
-    if (highlights.length === 0) return;
-    const newest = highlights[highlights.length - 1];
-    const el = lineRefs.current.get(newest.startLine);
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [highlights]);
+    setDraft(tab.content);
+    savedRef.current = tab.content;
+  }, [tab.content]);
+
+  const dirty = draft !== savedRef.current;
+
+  const handleSave = useCallback(async (content: string) => {
+    if (content === savedRef.current) return;
+    setSaveState("saving");
+    try {
+      await saveFile(tab.path, content);
+      savedRef.current = content;
+      updateFileContent(tab.path, content);
+      setSaveState("saved");
+      setTimeout(() => setSaveState("idle"), 1500);
+    } catch (err) {
+      console.error("save failed", err);
+      setSaveState("idle");
+    }
+  }, [tab.path, updateFileContent]);
+
+  // Auto-save 1.5 s after last keystroke
+  useEffect(() => {
+    if (draft === savedRef.current) return;
+    const id = setTimeout(() => handleSave(draft), 1500);
+    return () => clearTimeout(id);
+  }, [draft, handleSave]);
+
+  // Cmd+S / Ctrl+S — immediate save
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        handleSave(draft);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [draft, handleSave]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -187,6 +199,23 @@ function FileViewer({
         <span className="smallcaps">path</span>
         <span>{tab.path}</span>
         <span className="flex-1" />
+        {saveState === "saving" && (
+          <span className="font-mono text-[10.5px] text-bone-muted">saving…</span>
+        )}
+        {saveState === "saved" && (
+          <span className="font-mono text-[10.5px] text-ember/70">saved</span>
+        )}
+        {saveState === "idle" && dirty && (
+          <button
+            type="button"
+            onClick={() => handleSave(draft)}
+            className="flex items-center gap-1 font-mono text-[10.5px] text-bone-muted hover:text-bone"
+            title="Save (⌘S)"
+          >
+            <Save className="size-3" strokeWidth={1.6} />
+            unsaved
+          </button>
+        )}
         <span className="smallcaps">{tab.language}</span>
         {canRender && (
           <div className="ml-2 flex overflow-hidden rounded border border-rule text-[10.5px]">
@@ -226,81 +255,17 @@ function FileViewer({
           onRemoveHighlight={onRemoveHighlight}
         />
       ) : (
-      <div
-        ref={containerRef}
-        className="file-view relative flex-1 min-h-0 overflow-auto"
-      >
-        <div className="flex">
-          {/* code column */}
-          <div className="flex-1 min-w-0">
-            {lines.map((line, i) => {
-              const lineNum = i + 1;
-              const isHl = byLine.has(lineNum);
-              return (
-                <div
-                  key={i}
-                  ref={(el) => {
-                    lineRefs.current.set(lineNum, el);
-                  }}
-                  className={cn(
-                    "row group flex font-mono text-[12.5px] leading-[1.65]",
-                    isHl && "is-highlighted"
-                  )}
-                >
-                  <div className="ln w-12 shrink-0 select-none px-3 text-right text-[11px]">
-                    {lineNum}
-                  </div>
-                  <pre className="flex-1 overflow-x-auto whitespace-pre py-px pr-6">
-                    <code>{line || "​"}</code>
-                  </pre>
-                </div>
-              );
-            })}
-            <div className="h-24" />
-          </div>
-
-          {/* gutter / comment column */}
-          {highlights.length > 0 && (
-            <div className="hidden w-[22rem] shrink-0 border-l border-rule lg:block">
-            <div className="sticky top-0 px-4 py-3">
-              <span className="smallcaps">notes</span>
-            </div>
-            <div className="px-4">
-              {Array.from(startLines.entries())
-                .sort(([a], [b]) => a - b)
-                .map(([, hs]) =>
-                  hs.map((h) => (
-                    <div
-                      key={h.id}
-                      className="mb-3 rounded border border-rule bg-ground-2/40 p-3"
-                    >
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <span className="size-1 rounded-full bg-ember" />
-                        <span className="font-mono text-[10.5px] text-ember">
-                          L{h.startLine}
-                          {h.endLine !== h.startLine && `–${h.endLine}`}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label="close annotation"
-                          title="Close annotation"
-                          onClick={() => onRemoveHighlight(h.id)}
-                          className="ml-auto rounded border border-rule bg-ground/70 p-0.5 text-bone-muted hover:border-ember/40 hover:text-bone"
-                        >
-                          <X className="size-3" strokeWidth={1.6} />
-                        </button>
-                      </div>
-                      <p className="text-[12.5px] leading-relaxed text-bone-dim">
-                        {h.comment}
-                      </p>
-                    </div>
-                  ))
-                )}
-            </div>
-            </div>
-          )}
+        <div className="file-view flex-1 min-h-0 overflow-auto">
+          <textarea
+            className="h-full w-full resize-none bg-transparent font-mono text-[12.5px] leading-[1.65] text-bone-dim caret-ember outline-none px-5 py-3 placeholder:text-bone-muted"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck={false}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+          />
         </div>
-      </div>
       )}
     </div>
   );
@@ -308,6 +273,71 @@ function FileViewer({
 
 function isRenderable(language: string) {
   return ["markdown", "csv", "html", "json"].includes(language);
+}
+
+/* ─── frontmatter ───────────────────────────────────────────────────────── */
+
+function parseFrontmatter(content: string): {
+  meta: Record<string, string>;
+  body: string;
+} {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
+  if (!match) return { meta: {}, body: content };
+  const meta: Record<string, string> = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
+    if (key) meta[key] = val;
+  }
+  return { meta, body: content.slice(match[0].length) };
+}
+
+function FrontmatterPanel({ meta }: { meta: Record<string, string> }) {
+  const [open, setOpen] = useState(false);
+  const entries = Object.entries(meta);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="mb-6 rounded border border-rule/70 bg-ground-2/50 text-[12px]">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left"
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 text-bone-muted/60 transition-transform",
+            open && "rotate-90"
+          )}
+          strokeWidth={1.6}
+        />
+        <span className="font-mono text-[10.5px] text-bone-muted">properties</span>
+        {!open && (
+          <span className="ml-1 truncate font-mono text-[10px] text-bone-muted/50">
+            {entries
+              .slice(0, 4)
+              .map(([k]) => k)
+              .join(", ")}
+            {entries.length > 4 ? "…" : ""}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-rule/50 px-3 pb-3 pt-2">
+          <dl className="space-y-1.5">
+            {entries.map(([k, v]) => (
+              <div key={k} className="flex gap-3">
+                <dt className="w-28 shrink-0 font-mono text-[11px] text-bone-muted">{k}</dt>
+                <dd className="min-w-0 flex-1 break-words text-[11.5px] text-bone-dim">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function RenderedFile({
@@ -322,19 +352,24 @@ function RenderedFile({
   onRemoveHighlight: (id: string) => void;
 }) {
   if (tab.language === "markdown") {
+    const { meta, body } = parseFrontmatter(tab.content);
     return (
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="min-w-0 flex-1 overflow-auto">
           <div className="prose-snippet min-h-full max-w-none px-10 py-8">
+            <FrontmatterPanel meta={meta} />
             <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
+              remarkPlugins={[remarkGfm, remarkWikiLinks]}
               rehypePlugins={[
                 [rehypeHighlight, { detect: true, ignoreMissing: true }],
                 rehypeRaw,
               ]}
-              components={markdownHighlightComponents(highlights, onRemoveHighlight)}
+              components={{
+                ...markdownHighlightComponents(highlights, onRemoveHighlight),
+                a: WorkspaceAnchor,
+              }}
             >
-              {tab.content}
+              {body}
             </ReactMarkdown>
           </div>
         </div>

@@ -39,6 +39,15 @@ export async function fetchFile(
   return res.json();
 }
 
+export async function saveFile(path: string, content: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/file`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!res.ok) throw new Error(`file save failed: ${res.status}`);
+}
+
 export async function uploadFile(file: File, folder = ""): Promise<void> {
   const fd = new FormData();
   fd.append("file", file);
