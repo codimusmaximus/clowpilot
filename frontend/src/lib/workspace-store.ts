@@ -8,9 +8,13 @@ type WorkspaceState = {
   activeTabId: string | null;
   highlights: Highlight[];
   tree: FileNode | null;
+  pageTree: FileNode | null;
+  fileTree: FileNode | null;
   treeLoading: boolean;
 
   setTree: (tree: FileNode) => void;
+  setPageTree: (tree: FileNode) => void;
+  setFileTree: (tree: FileNode) => void;
   setTreeLoading: (v: boolean) => void;
 
   openFile: (
@@ -61,9 +65,13 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
   activeTabId: null,
   highlights: [],
   tree: null,
+  pageTree: null,
+  fileTree: null,
   treeLoading: false,
 
   setTree: (tree) => set({ tree }),
+  setPageTree: (pageTree) => set({ pageTree }),
+  setFileTree: (fileTree) => set({ fileTree }),
   setTreeLoading: (v) => set({ treeLoading: v }),
 
   openFile: (path, content, language) => {

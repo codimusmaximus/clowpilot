@@ -6,6 +6,9 @@ import {
   FolderOpen,
   ChevronRight,
   FileText,
+  File,
+  BookOpen,
+  HardDrive,
   RefreshCw,
   Plus,
   Trash2,
@@ -14,13 +17,15 @@ import {
 import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspace-store";
 import { useChatStore } from "@/lib/chat-store";
-import { fetchTree, fetchFile, uploadFile } from "@/lib/api";
+import { fetchPageTree, fetchFileTree, fetchFile, uploadFile } from "@/lib/api";
 import type { FileNode } from "@/lib/types";
 import { ResizableSplit } from "./resizable-split";
 
 export function Sidebar() {
-  const tree = useWorkspace((s) => s.tree);
-  const setTree = useWorkspace((s) => s.setTree);
+  const pageTree = useWorkspace((s) => s.pageTree);
+  const fileTree = useWorkspace((s) => s.fileTree);
+  const setPageTree = useWorkspace((s) => s.setPageTree);
+  const setFileTree = useWorkspace((s) => s.setFileTree);
   const setLoading = useWorkspace((s) => s.setTreeLoading);
   const loading = useWorkspace((s) => s.treeLoading);
   const openFile = useWorkspace((s) => s.openFile);
@@ -44,8 +49,9 @@ export function Sidebar() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const t = await fetchTree();
-      setTree(t);
+      const [pt, ft] = await Promise.all([fetchPageTree(), fetchFileTree()]);
+      setPageTree(pt);
+      setFileTree(ft);
     } catch (err) {
       console.error(err);
     } finally {
@@ -186,7 +192,7 @@ export function Sidebar() {
   const workspacePanel = (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2">
-        <span className="smallcaps flex-1">workspace</span>
+        <span className="smallcaps flex-1">files</span>
         <label
           className="cursor-pointer rounded p-1 text-bone-muted hover:bg-ground hover:text-bone"
           aria-label="upload"
@@ -198,24 +204,41 @@ export function Sidebar() {
         <button
           type="button"
           aria-label="refresh"
-          title="refresh tree"
+          title="refresh"
           onClick={refresh}
           className="rounded p-1 text-bone-muted hover:bg-ground hover:text-bone"
         >
           <RefreshCw
-            className={cn(
-              "size-3",
-              loading && "animate-spin text-ember"
-            )}
+            className={cn("size-3", loading && "animate-spin text-ember")}
             strokeWidth={1.6}
           />
         </button>
       </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-6">
-        {tree ? (
-          <TreeView node={tree} depth={0} onOpenFile={handleOpenFile} />
+        {/* ── Pages (DB-backed) ─────────────────────── */}
+        <div className="mb-1 flex items-center gap-1.5 px-2 pt-1 pb-0.5">
+          <BookOpen className="size-3 text-ember/70" strokeWidth={1.6} />
+          <span className="text-[10px] uppercase tracking-widest text-ember/70">Workspace</span>
+        </div>
+        {pageTree ? (
+          <TreeView node={pageTree} depth={0} onOpenFile={handleOpenFile} variant="pages" />
         ) : (
-          <p className="px-3 py-2 text-xs text-bone-muted">loading…</p>
+          <p className="px-3 py-1 text-[11px] text-bone-muted">loading…</p>
+        )}
+
+        {/* ── Divider ───────────────────────────────── */}
+        <div className="mx-2 my-2 border-t border-rule/60" />
+
+        {/* ── Filesystem (disk) ─────────────────────── */}
+        <div className="mb-1 flex items-center gap-1.5 px-2 pb-0.5">
+          <HardDrive className="size-3 text-sky-400/70" strokeWidth={1.6} />
+          <span className="text-[10px] uppercase tracking-widest text-sky-400/70">Filesystem</span>
+        </div>
+        {fileTree ? (
+          <TreeView node={fileTree} depth={0} onOpenFile={handleOpenFile} variant="files" />
+        ) : (
+          <p className="px-3 py-1 text-[11px] text-bone-muted">loading…</p>
         )}
       </div>
     </div>
@@ -407,43 +430,50 @@ function ProjectFolder({
   );
 }
 
+type TreeVariant = "pages" | "files";
+
 function TreeView({
   node,
   depth,
   onOpenFile,
+  variant = "pages",
 }: {
   node: FileNode;
   depth: number;
   onOpenFile: (path: string) => void;
+  variant?: TreeVariant;
 }) {
   if (depth === 0 && node.type === "dir") {
     return (
       <ul className="space-y-px">
         {(node.children ?? []).map((c) => (
-          <TreeNode
-            key={c.path || c.name}
-            node={c}
-            depth={1}
-            onOpenFile={onOpenFile}
-          />
+          <TreeNode key={c.path || c.name} node={c} depth={1} onOpenFile={onOpenFile} variant={variant} />
         ))}
       </ul>
     );
   }
-  return <TreeNode node={node} depth={depth} onOpenFile={onOpenFile} />;
+  return <TreeNode node={node} depth={depth} onOpenFile={onOpenFile} variant={variant} />;
 }
 
 function TreeNode({
   node,
   depth,
   onOpenFile,
+  variant,
 }: {
   node: FileNode;
   depth: number;
   onOpenFile: (path: string) => void;
+  variant: TreeVariant;
 }) {
   const [open, setOpen] = useState(false);
   const indent = (depth - 1) * 12;
+
+  const fileIconClass = variant === "pages"
+    ? "size-3 shrink-0 text-ember/50 group-hover:text-ember"
+    : "size-3 shrink-0 text-sky-400/50 group-hover:text-sky-400";
+
+  const FileIcon = variant === "pages" ? FileText : File;
 
   if (node.type === "dir") {
     return (
@@ -455,36 +485,20 @@ function TreeNode({
           style={{ paddingLeft: 8 + indent }}
         >
           <ChevronRight
-            className={cn(
-              "size-3 shrink-0 text-bone-muted transition-transform",
-              open && "rotate-90"
-            )}
+            className={cn("size-3 shrink-0 text-bone-muted transition-transform", open && "rotate-90")}
             strokeWidth={1.6}
           />
           {open ? (
-            <FolderOpen
-              className="size-3.5 shrink-0 text-bone-dim"
-              strokeWidth={1.6}
-            />
+            <FolderOpen className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
           ) : (
-            <Folder
-              className="size-3.5 shrink-0 text-bone-dim"
-              strokeWidth={1.6}
-            />
+            <Folder className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
           )}
-          <span className="truncate text-[12.5px] text-bone-dim">
-            {node.name}
-          </span>
+          <span className="truncate text-[12.5px] text-bone-dim">{node.name}</span>
         </button>
         {open && (
           <ul>
             {(node.children ?? []).map((c) => (
-              <TreeNode
-                key={c.path || c.name}
-                node={c}
-                depth={depth + 1}
-                onOpenFile={onOpenFile}
-              />
+              <TreeNode key={c.path || c.name} node={c} depth={depth + 1} onOpenFile={onOpenFile} variant={variant} />
             ))}
           </ul>
         )}
@@ -500,10 +514,7 @@ function TreeNode({
         className="group flex w-full items-center gap-1.5 rounded px-2 py-1 text-left hover:bg-ground"
         style={{ paddingLeft: 8 + indent + 14 }}
       >
-        <FileText
-          className="size-3 shrink-0 text-bone-muted group-hover:text-ember"
-          strokeWidth={1.6}
-        />
+        <FileIcon className={fileIconClass} strokeWidth={1.6} />
         <span className="truncate font-mono text-[11.5px] text-bone-dim group-hover:text-bone">
           {node.name}
         </span>

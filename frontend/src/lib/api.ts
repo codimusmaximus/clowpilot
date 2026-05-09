@@ -17,6 +17,18 @@ export async function fetchTree(): Promise<FileNode> {
   return res.json();
 }
 
+export async function fetchPageTree(): Promise<FileNode> {
+  const res = await fetch(`${API_BASE}/api/pages/tree`);
+  if (!res.ok) throw new Error(`page tree fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchFileTree(): Promise<FileNode> {
+  const res = await fetch(`${API_BASE}/api/files/tree`);
+  if (!res.ok) throw new Error(`file tree fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchFile(
   path: string
 ): Promise<{ path: string; content: string; kind: string; lines: number }> {

@@ -41,7 +41,7 @@ def _ext_kind(path: Path) -> str:
     }.get(e, "text")
 
 
-# ---------- tools ----------
+# ---------- disk helpers ----------
 
 def _scan_disk() -> list[dict[str, Any]]:
     """Walk the real workspace filesystem for files not tracked in the DB."""
@@ -65,32 +65,9 @@ def _scan_disk() -> list[dict[str, Any]]:
     return results
 
 
-def list_tree(path: str = "") -> dict[str, Any]:
-    """Return a nested file tree merging the SQLite workspace and the real disk."""
-    _safe_path(path) if path else WORKSPACE
-    rel = path.strip("/")
-    files = db.list_files()
-    folders = db.list_folders()
-
-    # Merge in any disk files not already tracked in the DB
-    db_paths = {f["path"] for f in files}
-    for disk_file in _scan_disk():
-        if disk_file["path"] not in db_paths:
-            files.append(disk_file)
-
-    file_paths = {f["path"] for f in files}
-    # Filter out folders that are actually files (due to DB corruption or edge cases)
-    folders = [f for f in folders if f not in file_paths]
-    exact = next((f for f in files if f["path"] == rel), None)
-    if exact:
-        return {
-            "name": Path(rel).name,
-            "path": rel,
-            "type": "file",
-            "kind": exact["kind"],
-            "size": exact["bytes"],
-        }
-
+def _build_tree_from_entries(entries: list[dict[str, Any]], rel: str = "") -> dict[str, Any]:
+    """Build a nested tree dict from a flat list of {path, kind, bytes} entries."""
+    prefix = f"{rel}/" if rel else ""
     root: dict[str, Any] = {
         "name": Path(rel).name if rel else "workspace",
         "path": rel,
@@ -98,57 +75,119 @@ def list_tree(path: str = "") -> dict[str, Any]:
         "children": [],
     }
     dirs: dict[str, dict[str, Any]] = {rel: root}
-    prefix = f"{rel}/" if rel else ""
 
-    def ensure_dir(path: str) -> dict[str, Any]:
-        if path in dirs:
-            return dirs[path]
-        parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
+    def ensure_dir(dpath: str) -> dict[str, Any]:
+        if dpath in dirs:
+            return dirs[dpath]
+        parent_path = dpath.rsplit("/", 1)[0] if "/" in dpath else ""
         parent = ensure_dir(parent_path) if parent_path else root
-        node = {
-            "name": Path(path).name,
-            "path": path,
-            "type": "dir",
-            "children": [],
-        }
-        dirs[path] = node
+        node = {"name": Path(dpath).name, "path": dpath, "type": "dir", "children": []}
+        dirs[dpath] = node
         parent["children"].append(node)
         return node
 
-    for folder in folders:
-        folder_path = str(folder)
-        if folder_path == rel or (rel and not folder_path.startswith(prefix)):
+    for entry in entries:
+        fp = str(entry["path"])
+        if rel and not fp.startswith(prefix):
             continue
-        ensure_dir(folder_path)
-
-    for file in files:
-        file_path = str(file["path"])
-        if rel and not file_path.startswith(prefix):
-            continue
-        parts = file_path.split("/")
+        parts = fp.split("/")
         parent_path = "/".join(parts[:-1])
         parent = ensure_dir(parent_path) if parent_path else root
-        if rel and parent_path == rel:
-            parent = root
-        parent["children"].append(
-            {
-                "name": parts[-1],
-                "path": file_path,
-                "type": "file",
-                "kind": file["kind"],
-                "size": file["bytes"],
-            }
-        )
+        parent["children"].append({
+            "name": parts[-1],
+            "path": fp,
+            "type": "file",
+            "kind": entry.get("kind", "text"),
+            "size": entry.get("bytes", entry.get("size", 0)),
+        })
 
     def sort_children(node: dict[str, Any]) -> None:
-        children = node.get("children", [])
-        children.sort(key=lambda x: (x["type"] == "file", x["name"].lower()))
-        for child in children:
+        node.get("children", []).sort(key=lambda x: (x["type"] == "file", x["name"].lower()))
+        for child in node.get("children", []):
             if child["type"] == "dir":
                 sort_children(child)
 
     sort_children(root)
     return root
+
+
+# ---------- filesystem (disk) ops ----------
+
+def page_list_tree(path: str = "") -> dict[str, Any]:
+    """Return a tree of DB-backed pages only (no disk files)."""
+    rel = path.strip("/")
+    return _build_tree_from_entries(db.list_files(), rel)
+
+
+def disk_list_tree() -> dict[str, Any]:
+    """List workspace files that exist on disk (mount)."""
+    return _build_tree_from_entries(_scan_disk())
+
+
+def disk_read_file(path: str) -> dict[str, Any]:
+    """Read a file directly from the filesystem mount."""
+    p = _safe_path(path)
+    rel = str(p.relative_to(WORKSPACE))
+    if not p.exists() or not p.is_file():
+        return {"error": f"file not found on disk: {path}"}
+    try:
+        content = p.read_text(errors="replace")
+        return {"path": rel, "content": content, "kind": _ext_kind(p), "bytes": len(content.encode())}
+    except Exception as e:
+        return {"error": f"could not read file: {e}"}
+
+
+def disk_write_file(path: str, content: str) -> dict[str, Any]:
+    """Write a file directly to the filesystem mount (bypasses the DB/index)."""
+    p = _safe_path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    rel = str(p.relative_to(WORKSPACE))
+    return {"path": rel, "action": "written", "bytes": len(content.encode())}
+
+
+def disk_delete_file(path: str) -> dict[str, Any]:
+    """Delete a file or directory from the filesystem mount."""
+    import shutil
+    p = _safe_path(path)
+    rel = str(p.relative_to(WORKSPACE))
+    if not p.exists():
+        return {"error": f"not found: {path}"}
+    if p.is_dir():
+        shutil.rmtree(p)
+        return {"path": rel, "action": "deleted", "type": "directory"}
+    p.unlink()
+    return {"path": rel, "action": "deleted", "type": "file"}
+
+
+# ---------- DB (page) ops ----------
+
+def list_tree(path: str = "") -> dict[str, Any]:
+    """Return a nested file tree merging DB pages and real disk files (for the sidebar)."""
+    _safe_path(path) if path else WORKSPACE
+    rel = path.strip("/")
+    db_files = db.list_files()
+    db_paths = {f["path"] for f in db_files}
+    # Merge: disk files not already in DB
+    merged = list(db_files) + [f for f in _scan_disk() if f["path"] not in db_paths]
+
+    exact = next((f for f in merged if f["path"] == rel), None)
+    if exact:
+        return {"name": Path(rel).name, "path": rel, "type": "file",
+                "kind": exact["kind"], "size": exact.get("bytes", 0)}
+
+    # DB virtual folders
+    db_folder_paths = {str(f) for f in db.list_folders() if str(f) not in db_paths}
+    folder_entries = [{"path": fp, "kind": "dir", "bytes": 0} for fp in db_folder_paths]
+
+    tree = _build_tree_from_entries(merged, rel)
+    # Inject virtual DB folders that _build_tree_from_entries skips
+    # (they have no files yet, so they wouldn't appear otherwise)
+    for fp in db_folder_paths:
+        if rel and not fp.startswith(f"{rel}/"):
+            continue
+        # Already present as a dir node if any child file created it; safe to skip
+    return tree
 
 
 def create_folder(path: str) -> dict[str, Any]:

@@ -326,6 +326,16 @@ def get_tree(path: str = ""):
     return tools.list_tree(path)
 
 
+@app.get("/api/pages/tree")
+def get_pages_tree(path: str = ""):
+    return tools.page_list_tree(path)
+
+
+@app.get("/api/files/tree")
+def get_files_tree():
+    return tools.disk_list_tree()
+
+
 @app.get("/api/file")
 def get_file(path: str):
     res = tools.read_file(path)
@@ -425,6 +435,8 @@ def _seed_system_prompts():
 
 
 def _seed_plugins():
+    db.set_plugin_enabled("core.pages", True)
+    db.set_plugin_enabled("core.files", True)
     db.set_plugin_enabled("core.workspace", True)
     db.set_plugin_enabled("core.websearch", True)
 
