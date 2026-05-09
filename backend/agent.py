@@ -1,8 +1,17 @@
-"""Pydantic AI streaming agent loop (OpenAI backend).
+"""Pydantic AI streaming agent loop.
 
-Streams a custom JSON event protocol over SSE that the frontend converts
-into assistant-ui messages. The protocol is unchanged from the previous
-Anthropic implementation so the frontend doesn't need any updates.
+Supports OpenAI, Google Gemini, and DeepSeek backends.
+
+Model selection (in priority order):
+  1. LLM_MODEL env var — explicit override, any provider string
+  2. Auto: first Flash model available (GOOGLE_API_KEY → Gemini 3 Flash,
+     DEEPSEEK_API_KEY → DeepSeek Chat, OPENAI_API_KEY → GPT)
+  Pro models are listed in the selector but default is Flash to avoid
+  free-tier quota=0 limits.
+
+Auto-fallback: if the active model hits a quota / rate-limit error before
+emitting any events, the agent transparently retries with the next available
+provider and emits a brief notice in the chat.
 """
 
 from __future__ import annotations
@@ -35,7 +44,141 @@ from pydantic_ai.messages import (
 from plugins import registry as plugin_registry
 
 
-MODEL = os.environ.get("OPENAI_MODEL", "openai:gpt-5.2")
+# ---------------------------------------------------------------------------
+# Provider catalogue
+# ---------------------------------------------------------------------------
+
+# Each entry: id, display name, pydantic-ai model string, env keys (any one suffices).
+# Order defines the fallback chain when quota is exhausted.
+PROVIDERS: list[dict] = [
+    # ── Google — tested working with this key ────────────────────────────────
+    {
+        "id": "gemini-3.1-pro",
+        "name": "Gemini 3.1 Pro",
+        "model": "google-gla:gemini-3.1-pro-preview",
+        "env_keys": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    },
+    {
+        "id": "gemini-3-flash",
+        "name": "Gemini 3 Flash",
+        "model": "google-gla:gemini-3-flash-preview",
+        "env_keys": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    },
+    {
+        "id": "gemini-3.1-flash-lite",
+        "name": "Gemini 3.1 Flash Lite",
+        "model": "google-gla:gemini-3.1-flash-lite",
+        "env_keys": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    },
+    {
+        "id": "gemini-2.5-flash",
+        "name": "Gemini 2.5 Flash",
+        "model": "google-gla:gemini-2.5-flash",
+        "env_keys": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    },
+    # ── Mistral ──────────────────────────────────────────────────────────────
+    {
+        "id": "mistral-large",
+        "name": "Mistral Large",
+        "model": "mistral:mistral-large-latest",
+        "env_keys": ["MISTRAL_API_KEY"],
+    },
+    {
+        "id": "magistral-medium",
+        "name": "Magistral Medium",
+        "model": "mistral:magistral-medium-latest",
+        "env_keys": ["MISTRAL_API_KEY"],
+    },
+    {
+        "id": "mistral-medium",
+        "name": "Mistral Medium",
+        "model": "mistral:mistral-medium-latest",
+        "env_keys": ["MISTRAL_API_KEY"],
+    },
+    {
+        "id": "mistral-small",
+        "name": "Mistral Small",
+        "model": "mistral:mistral-small-latest",
+        "env_keys": ["MISTRAL_API_KEY"],
+    },
+    {
+        "id": "codestral",
+        "name": "Codestral",
+        "model": "mistral:codestral-latest",
+        "env_keys": ["MISTRAL_API_KEY"],
+    },
+    # ── DeepSeek ─────────────────────────────────────────────────────────────
+    {
+        "id": "deepseek-chat",
+        "name": "DeepSeek Chat",
+        "model": "deepseek:deepseek-chat",
+        "env_keys": ["DEEPSEEK_API_KEY"],
+    },
+    {
+        "id": "deepseek-reasoner",
+        "name": "DeepSeek Reasoner",
+        "model": "deepseek:deepseek-reasoner",
+        "env_keys": ["DEEPSEEK_API_KEY"],
+    },
+    # ── OpenAI ───────────────────────────────────────────────────────────────
+    {
+        "id": "openai",
+        "name": "GPT",
+        "model": os.environ.get("OPENAI_MODEL", "openai:gpt-5.2"),
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+]
+
+
+def list_available_models() -> list[dict[str, str]]:
+    """Return models whose provider key is present in the environment."""
+    seen: set[str] = set()
+    available: list[dict[str, str]] = []
+    for p in PROVIDERS:
+        if any(os.environ.get(k) for k in p["env_keys"]) and p["model"] not in seen:
+            seen.add(p["model"])
+            available.append({"id": p["id"], "name": p["name"], "model": p["model"]})
+    return available
+
+
+def _resolve_initial_model() -> str:
+    explicit = os.environ.get("LLM_MODEL")
+    if explicit:
+        return explicit
+    available = list_available_models()
+    # Prefer a Flash model as default (Pro models may hit free-tier quota=0)
+    for m in available:
+        if "flash" in m["model"]:
+            return m["model"]
+    return available[0]["model"] if available else "openai:gpt-5.2"
+
+
+# Module-level active model — mutated by set_active_model() on auto-fallback
+# or by the /api/models/active endpoint.
+_active_model: str = _resolve_initial_model()
+
+
+def get_active_model() -> str:
+    return _active_model
+
+
+def set_active_model(model: str) -> None:
+    global _active_model
+    _active_model = model
+
+
+def _model_display_name(model: str) -> str:
+    """Return a short human-readable name for a model string."""
+    for m in list_available_models():
+        if m["model"] == model:
+            return m["name"]
+    # Fallback: strip the provider prefix
+    return model.split(":", 1)[-1] if ":" in model else model
+
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
 
 BASE_SYSTEM_PROMPT = """You are a workspace copilot embedded in a UI with three panes:
 a left sidebar (file tree + threads), a centre chat (this conversation), and a
@@ -63,8 +206,13 @@ def _compose_system_prompt(
     return f"{base_prompt}\n\nEnabled plugins:\n\n{plugin_instructions}"
 
 
-def _build_agent(conversation_id: str | None = None) -> Agent:
-    runtime_agent = Agent(MODEL)
+# ---------------------------------------------------------------------------
+# Agent construction
+# ---------------------------------------------------------------------------
+
+def _build_agent(conversation_id: str | None = None, model: str | None = None) -> Agent:
+    model_str = model or _active_model
+    runtime_agent = Agent(model_str)
 
     def wrap_handler(handler):
         def safe_handler(*args, **kwargs):
@@ -72,7 +220,6 @@ def _build_agent(conversation_id: str | None = None) -> Agent:
                 return handler(*args, **kwargs)
             except Exception as e:
                 return f"Tool call failed: {type(e).__name__}: {e}"
-
         return safe_handler
 
     for tool in plugin_registry.tools(conversation_id):
@@ -80,21 +227,37 @@ def _build_agent(conversation_id: str | None = None) -> Agent:
     return runtime_agent
 
 
-# ---------- protocol ----------
+# ---------------------------------------------------------------------------
+# Quota / rate-limit detection
+# ---------------------------------------------------------------------------
+
+_QUOTA_KEYWORDS = (
+    "quota", "rate limit", "rate_limit", "429",
+    "insufficient", "token limit", "context window",
+    "exceeded", "capacity", "overloaded",
+)
 
 
-async def run(
+def _is_quota_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in _QUOTA_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# Main run loop with auto-fallback
+# ---------------------------------------------------------------------------
+
+async def _stream_model(
+    model_str: str,
     prompt: str,
     history: list[ModelMessage],
-    conversation_id: str | None = None,
-    system_prompt: str | None = None,
+    conversation_id: str | None,
+    system_prompt: str | None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Run the agent and yield SSE event dicts mirroring the previous protocol."""
+    """Yield processed SSE event dicts for one model run."""
 
-    # index → {"id", "name"} so we can attach deltas to the right tool call
     tool_calls: dict[int, dict[str, str]] = {}
-
-    runtime_agent = _build_agent(conversation_id)
+    runtime_agent = _build_agent(conversation_id, model_str)
 
     async for event in runtime_agent.run_stream_events(
         prompt,
@@ -110,23 +273,11 @@ async def run(
                 if part.content:
                     yield {"type": "text-delta", "delta": part.content}
             elif isinstance(part, ToolCallPart):
-                tool_calls[event.index] = {
-                    "id": part.tool_call_id,
-                    "name": part.tool_name,
-                }
-                yield {
-                    "type": "tool-call-start",
-                    "id": part.tool_call_id,
-                    "name": part.tool_name,
-                }
-                # initial args (if any) arrive on the part itself
+                tool_calls[event.index] = {"id": part.tool_call_id, "name": part.tool_name}
+                yield {"type": "tool-call-start", "id": part.tool_call_id, "name": part.tool_name}
                 if part.args:
                     delta = part.args if isinstance(part.args, str) else json.dumps(part.args)
-                    yield {
-                        "type": "tool-call-input-delta",
-                        "id": part.tool_call_id,
-                        "delta": delta,
-                    }
+                    yield {"type": "tool-call-input-delta", "id": part.tool_call_id, "delta": delta}
 
         elif isinstance(event, PartDeltaEvent):
             delta = event.delta
@@ -134,19 +285,13 @@ async def run(
                 yield {"type": "text-delta", "delta": delta.content_delta}
             elif isinstance(delta, ToolCallPartDelta):
                 tc = tool_calls.get(event.index)
-                if tc is None:
-                    continue
-                if delta.args_delta is not None:
+                if tc and delta.args_delta is not None:
                     chunk = (
                         delta.args_delta
                         if isinstance(delta.args_delta, str)
                         else json.dumps(delta.args_delta)
                     )
-                    yield {
-                        "type": "tool-call-input-delta",
-                        "id": tc["id"],
-                        "delta": chunk,
-                    }
+                    yield {"type": "tool-call-input-delta", "id": tc["id"], "delta": chunk}
 
         elif isinstance(event, FunctionToolCallEvent):
             part = event.part
@@ -156,46 +301,75 @@ async def run(
                     args = json.loads(args) if args else {}
                 except json.JSONDecodeError:
                     args = {}
-            yield {
-                "type": "tool-call-input",
-                "id": part.tool_call_id,
-                "name": part.tool_name,
-                "input": args or {},
-            }
+            yield {"type": "tool-call-input", "id": part.tool_call_id, "name": part.tool_name, "input": args or {}}
 
         elif isinstance(event, FunctionToolResultEvent):
             result = event.result
             if isinstance(result, ToolReturnPart):
-                yield {
-                    "type": "tool-result",
-                    "id": result.tool_call_id,
-                    "name": result.tool_name,
-                    "result": result.content,
-                }
-
-    yield {"type": "done"}
+                yield {"type": "tool-result", "id": result.tool_call_id, "name": result.tool_name, "result": result.content}
 
 
-# ---------- frontend → ModelMessage conversion ----------
+async def run(
+    prompt: str,
+    history: list[ModelMessage],
+    conversation_id: str | None = None,
+    system_prompt: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Run the agent and yield SSE event dicts.
 
+    On quota/rate-limit errors, automatically falls back through the chain of
+    available models (in PROVIDERS order) and emits a notice in the chat stream.
+    """
+    available = list_available_models()
+    active = _active_model
+
+    # Build fallback chain: active model first, then remaining available models
+    model_chain = [active] + [m["model"] for m in available if m["model"] != active]
+
+    last_exc: Exception | None = None
+
+    for idx, model_str in enumerate(model_chain):
+        events_sent = 0
+        try:
+            async for event in _stream_model(model_str, prompt, history, conversation_id, system_prompt):
+                events_sent += 1
+                yield event
+            yield {"type": "done"}
+            return
+
+        except Exception as exc:
+            last_exc = exc
+            is_last = idx == len(model_chain) - 1
+
+            if events_sent == 0 and _is_quota_error(exc) and not is_last:
+                next_model = model_chain[idx + 1]
+                set_active_model(next_model)
+                notice = (
+                    f"_(Quota limit on **{_model_display_name(model_str)}** — "
+                    f"switched to **{_model_display_name(next_model)}**)_\n\n"
+                )
+                yield {"type": "text-delta", "delta": notice}
+                yield {"type": "model-switch", "from": model_str, "to": next_model}
+                continue
+
+            # Non-quota error or no fallbacks left — propagate
+            raise
+
+    if last_exc:
+        raise last_exc
+
+
+# ---------------------------------------------------------------------------
+# Frontend → ModelMessage conversion
+# ---------------------------------------------------------------------------
 
 def split_messages(
     msgs: list[dict[str, Any]],
 ) -> tuple[str, list[ModelMessage]]:
-    """Split the frontend's message list into (current_prompt, history).
-
-    Frontend format per message:
-      {"role": "user", "content": "string"}     or
-      {"role": "user"|"assistant", "content": [parts...]}
-
-    Where parts are:
-      {"type": "text", "text": "..."}
-      {"type": "tool-call", "id", "name", "input", "result"}
-    """
+    """Split the frontend's message list into (current_prompt, history)."""
     if not msgs:
         return "", []
 
-    # last message must be the user's new prompt
     last = msgs[-1]
     prompt = ""
     if last.get("role") == "user":
@@ -203,9 +377,7 @@ def split_messages(
         if isinstance(c, str):
             prompt = c
         elif isinstance(c, list):
-            prompt = "".join(
-                p.get("text", "") for p in c if p.get("type") == "text"
-            )
+            prompt = "".join(p.get("text", "") for p in c if p.get("type") == "text")
 
     history: list[ModelMessage] = []
     for m in msgs[:-1]:
@@ -235,13 +407,9 @@ def split_messages(
                             tool_call_id=p["id"],
                         )
                     )
-                    
-                    # If the tool call has a result, use it.
-                    # Otherwise, synthesize a failure message so the LLM knows it didn't succeed.
                     result = p.get("result")
                     if result is None:
                         result = f"Tool call failed: '{p['name']}' was interrupted or returned no result."
-                    
                     tool_returns.append(
                         ToolReturnPart(
                             tool_name=p["name"],

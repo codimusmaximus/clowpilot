@@ -20,7 +20,14 @@ from pydantic import BaseModel
 
 import tools
 import db
-from agent import BASE_SYSTEM_PROMPT, run, split_messages
+from agent import (
+    BASE_SYSTEM_PROMPT,
+    get_active_model,
+    list_available_models,
+    run,
+    set_active_model,
+    split_messages,
+)
 from plugins import registry as plugin_registry
 
 load_dotenv()
@@ -75,6 +82,16 @@ class MessagesRequest(BaseModel):
 class ConversationRequest(BaseModel):
     title: str | None = None
     systemPromptId: str | None = None
+    projectId: str | None = None
+
+
+class ProjectRequest(BaseModel):
+    name: str
+    systemPromptId: str | None = None
+
+
+class ConversationProjectRequest(BaseModel):
+    projectId: str | None = None
 
 
 class SystemPromptRequest(BaseModel):
@@ -84,6 +101,10 @@ class SystemPromptRequest(BaseModel):
 
 class ActiveSystemPromptRequest(BaseModel):
     id: str
+
+
+class ActiveModelRequest(BaseModel):
+    model: str
 
 
 class PluginSettingsRequest(BaseModel):
@@ -135,7 +156,25 @@ def post_conversation(req: ConversationRequest):
     prompt_id = req.systemPromptId or db.get_active_system_prompt_id()
     if prompt_id and db.get_system_prompt(prompt_id) is None:
         raise HTTPException(404, f"system prompt not found: {prompt_id}")
-    return db.create_conversation(req.title or "New chat", prompt_id)
+    if req.projectId and db.get_project(req.projectId) is None:
+        raise HTTPException(404, f"project not found: {req.projectId}")
+    return db.create_conversation(req.title or "New chat", prompt_id, req.projectId)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation_endpoint(conversation_id: str):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    db.delete_conversation(conversation_id)
+    return {"ok": True}
+
+
+@app.put("/api/conversations/{conversation_id}/project")
+def put_conversation_project(conversation_id: str, req: ConversationProjectRequest):
+    conversation = db.set_conversation_project(conversation_id, req.projectId)
+    if conversation is None:
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    return conversation
 
 
 @app.put("/api/conversations/{conversation_id}/system-prompt")
@@ -196,6 +235,49 @@ def put_system_prompt(prompt_id: str, req: SystemPromptRequest):
     if prompt is None:
         raise HTTPException(404, f"system prompt not found: {prompt_id}")
     return prompt
+
+
+# ---------- models ----------
+
+
+@app.get("/api/models")
+def get_models():
+    return {
+        "models": list_available_models(),
+        "activeModel": get_active_model(),
+    }
+
+
+@app.put("/api/models/active")
+def put_active_model(req: ActiveModelRequest):
+    available = {m["model"] for m in list_available_models()}
+    if req.model not in available:
+        raise HTTPException(400, f"model not available: {req.model}")
+    set_active_model(req.model)
+    return {"ok": True, "activeModel": req.model}
+
+
+# ---------- projects ----------
+
+
+@app.get("/api/projects")
+def get_projects():
+    return {"projects": db.list_projects()}
+
+
+@app.post("/api/projects")
+def post_project(req: ProjectRequest):
+    if req.systemPromptId and db.get_system_prompt(req.systemPromptId) is None:
+        raise HTTPException(404, f"system prompt not found: {req.systemPromptId}")
+    return db.create_project(req.name, req.systemPromptId)
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project_endpoint(project_id: str):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project not found: {project_id}")
+    db.delete_project(project_id)
+    return {"ok": True}
 
 
 # ---------- plugins ----------

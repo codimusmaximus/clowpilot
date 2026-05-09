@@ -2,7 +2,9 @@ import type {
   AppMessage,
   Conversation,
   FileNode,
+  ModelInfo,
   PluginStatus,
+  Project,
   SystemPrompt,
 } from "./types";
 
@@ -46,15 +48,52 @@ export async function fetchConversations(): Promise<{
 
 export async function createConversation(
   title = "New chat",
-  systemPromptId?: string | null
+  systemPromptId?: string | null,
+  projectId?: string | null
 ): Promise<Conversation> {
   const res = await fetch(`${API_BASE}/api/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, systemPromptId }),
+    body: JSON.stringify({ title, systemPromptId, projectId }),
   });
   if (!res.ok) throw new Error(`conversation create failed: ${res.status}`);
   return res.json();
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw new Error(`conversation delete failed: ${res.status}`);
+}
+
+export async function fetchProjects(): Promise<Project[]> {
+  const res = await fetch(`${API_BASE}/api/projects`);
+  if (!res.ok) throw new Error(`projects fetch failed: ${res.status}`);
+  const data = (await res.json()) as { projects: Project[] };
+  return data.projects;
+}
+
+export async function createProject(
+  name: string,
+  systemPromptId?: string | null
+): Promise<Project> {
+  const res = await fetch(`${API_BASE}/api/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, systemPromptId }),
+  });
+  if (!res.ok) throw new Error(`project create failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${encodeURIComponent(projectId)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw new Error(`project delete failed: ${res.status}`);
 }
 
 export async function fetchMessages(
@@ -182,6 +221,24 @@ export async function toggleConversationPlugin(
     }
   );
   if (!res.ok) throw new Error(`plugin toggle failed: ${res.status}`);
+}
+
+export async function fetchModels(): Promise<{
+  models: ModelInfo[];
+  activeModel: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/models`);
+  if (!res.ok) throw new Error(`models fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function setActiveModel(model: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/models/active`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  if (!res.ok) throw new Error(`model select failed: ${res.status}`);
 }
 
 export const CHAT_URL = `${API_BASE}/api/chat`;
