@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ContentFilterError
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -238,7 +239,10 @@ _QUOTA_KEYWORDS = (
 )
 
 
-def _is_quota_error(exc: Exception) -> bool:
+def _is_retryable_error(exc: Exception) -> bool:
+    """Return True if the error should trigger an auto-fallback to the next model."""
+    if isinstance(exc, ContentFilterError):
+        return True
     msg = str(exc).lower()
     return any(kw in msg for kw in _QUOTA_KEYWORDS)
 
@@ -341,7 +345,7 @@ async def run(
             last_exc = exc
             is_last = idx == len(model_chain) - 1
 
-            if events_sent == 0 and _is_quota_error(exc) and not is_last:
+            if events_sent == 0 and _is_retryable_error(exc) and not is_last:
                 next_model = model_chain[idx + 1]
                 set_active_model(next_model)
                 notice = (
