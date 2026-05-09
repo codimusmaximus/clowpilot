@@ -1052,6 +1052,52 @@ def is_plugin_enabled_for_conversation(conversation_id: str, plugin_id: str) -> 
     return is_plugin_enabled(plugin_id)
 
 
+def get_conversation_disabled_tools(conversation_id: str, plugin_id: str) -> list[str]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT config FROM conversation_plugins WHERE conversation_id = ? AND plugin_id = ?",
+            (conversation_id, plugin_id),
+        ).fetchone()
+    if row is None or not row["config"]:
+        return []
+    try:
+        config = json.loads(str(row["config"]))
+        return config.get("disabled_tools", []) if isinstance(config, dict) else []
+    except (json.JSONDecodeError, AttributeError):
+        return []
+
+
+def set_conversation_tool_enabled(
+    conversation_id: str, plugin_id: str, tool_name: str, enabled: bool
+) -> None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT config FROM conversation_plugins WHERE conversation_id = ? AND plugin_id = ?",
+            (conversation_id, plugin_id),
+        ).fetchone()
+    config: dict = {}
+    if row and row["config"]:
+        try:
+            config = json.loads(str(row["config"])) or {}
+        except json.JSONDecodeError:
+            config = {}
+    disabled: set[str] = set(config.get("disabled_tools", []))
+    if enabled:
+        disabled.discard(tool_name)
+    else:
+        disabled.add(tool_name)
+    config["disabled_tools"] = sorted(disabled)
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_plugins (conversation_id, plugin_id, enabled, config)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(conversation_id, plugin_id) DO UPDATE SET config = excluded.config
+            """,
+            (conversation_id, plugin_id, json.dumps(config)),
+        )
+
+
 def ensure_system_prompt(name: str, content: str) -> dict[str, Any]:
     prompts = list_system_prompts()
     active_id = get_active_system_prompt_id()

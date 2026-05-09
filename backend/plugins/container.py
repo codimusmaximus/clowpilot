@@ -122,6 +122,7 @@ def get_plugin() -> PluginSpec:
         id="core.container",
         name="Container System",
         type="core",
+        description="Run shell commands and read/write files inside the container.",
         instructions=INSTRUCTIONS,
         tools=[
             ToolSpec("run_command", run_command),

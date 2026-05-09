@@ -85,6 +85,7 @@ def get_plugin() -> PluginSpec:
         id="core.pages",
         name="Pages",
         type="core",
+        description="DB-backed page store — create, edit, and search structured content.",
         instructions=INSTRUCTIONS,
         tools=[
             ToolSpec("page_list", page_list),

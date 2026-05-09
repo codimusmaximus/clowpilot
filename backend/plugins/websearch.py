@@ -145,6 +145,7 @@ def get_plugin() -> PluginSpec:
         id="core.websearch",
         name="Web Search",
         type="core",
+        description="Search the web and scrape URLs via Firecrawl.",
         instructions=INSTRUCTIONS,
         tools=[
             ToolSpec(name="web_search", handler=web_search),

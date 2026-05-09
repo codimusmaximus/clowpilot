@@ -59,6 +59,7 @@ def get_plugin() -> PluginSpec:
         id="core.files",
         name="Files",
         type="core",
+        description="Real filesystem access — read and write files on the mounted volume.",
         instructions=INSTRUCTIONS,
         tools=[
             ToolSpec("file_list", file_list),

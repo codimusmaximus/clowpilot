@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   ThreadPrimitive,
   MessagePrimitive,
@@ -14,19 +14,17 @@ import {
 } from "@assistant-ui/react";
 import {
   ArrowUp,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Pencil,
-  Plug,
+  PanelRight,
   Square,
   Sparkles,
-  Wrench,
 } from "lucide-react";
 import { Markdown } from "./markdown";
 import { ToolCallCard } from "./tool-call";
 import { useChatStore } from "@/lib/chat-store";
-import { fetchPlugins } from "@/lib/api";
+import { useUIStore } from "@/lib/ui-store";
 import { createPluginContextCommands } from "@/lib/plugin-context";
 import type { PluginStatus, ToolCallStatus } from "@/lib/types";
 import { cn } from "@/lib/cn";
@@ -190,13 +188,14 @@ function AssistantMessage() {
   );
 }
 
+const examples = [
+  "Read the welcome note and walk me through it.",
+  "Make a markdown TL;DR of customers.csv as a table.",
+  "Create a Python script that sums MRR from the CSV — show it and explain.",
+  "Highlight the comment-pinning rule in welcome.md.",
+];
+
 function EmptyState() {
-  const examples = [
-    "Read the welcome note and walk me through it.",
-    "Make a markdown TL;DR of customers.csv as a table.",
-    "Create a Python script that sums MRR from the CSV — show it and explain.",
-    "Highlight the comment-pinning rule in welcome.md.",
-  ];
   return (
     <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-6 px-6 pt-12">
       <div className="space-y-1">
@@ -217,110 +216,15 @@ function EmptyState() {
         <ul className="divide-y divide-rule border-y border-rule">
           {examples.map((ex) => (
             <li key={ex}>
-              <ThreadPrimitive.Suggestion
-                prompt={ex}
-                method="replace"
-                autoSend
-                asChild
-              >
+              <ThreadPrimitive.Suggestion prompt={ex} method="replace" autoSend asChild>
                 <button className="group flex w-full items-center gap-3 py-2.5 text-left hover:text-bone">
-                  <Sparkles
-                    className="size-3 text-bone-muted transition-colors group-hover:text-ember"
-                    strokeWidth={1.6}
-                  />
-                  <span className="flex-1 text-sm text-bone-dim transition-colors group-hover:text-bone">
-                    {ex}
-                  </span>
+                  <Sparkles className="size-3 text-bone-muted transition-colors group-hover:text-ember" strokeWidth={1.6} />
+                  <span className="flex-1 text-sm text-bone-dim transition-colors group-hover:text-bone">{ex}</span>
                 </button>
               </ThreadPrimitive.Suggestion>
             </li>
           ))}
         </ul>
-      </div>
-    </div>
-  );
-}
-
-function PluginPanel({
-  plugins,
-  onToggle,
-}: {
-  plugins: PluginStatus[];
-  onToggle: (id: string, enabled: boolean) => void;
-}) {
-  const totalTools = plugins.reduce(
-    (sum, plugin) => sum + (plugin.enabled ? plugin.tools.length : 0),
-    0
-  );
-
-  return (
-    <div className="border-t border-rule bg-ground-2/25 px-6 py-4">
-      <div className="mx-auto max-w-[44rem] space-y-3">
-        <div className="flex items-center gap-2">
-          <Plug className="size-3.5 text-ember" strokeWidth={1.6} />
-          <span className="smallcaps">plugins</span>
-          <span className="font-mono text-[10.5px] text-bone-muted">
-            {plugins.filter((p) => p.enabled).length} active · {totalTools} tools
-          </span>
-        </div>
-
-        <div className="grid gap-2 md:grid-cols-2">
-          {plugins.map((plugin) => (
-            <button
-              key={plugin.id}
-              onClick={() => onToggle(plugin.id, !plugin.enabled)}
-              className={cn(
-                "group flex flex-col rounded border p-3 text-left transition-colors",
-                plugin.enabled
-                  ? "border-ember/40 bg-ember-soft/10 hover:border-ember/60"
-                  : "border-rule bg-ground/55 hover:border-rule-strong hover:bg-ground/80"
-              )}
-            >
-              <div className="flex items-start gap-2">
-                <span
-                  className={cn(
-                    "mt-1 size-1.5 shrink-0 rounded-full",
-                    plugin.enabled ? "bg-ember" : "bg-bone-muted"
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-display text-base italic text-bone">
-                      {plugin.name}
-                    </span>
-                    <span className="rounded border border-rule px-1.5 py-0.5 font-mono text-[9.5px] text-bone-muted">
-                      {plugin.type}
-                    </span>
-                  </div>
-                  <div className="truncate font-mono text-[10.5px] text-bone-muted">
-                    {plugin.id}
-                  </div>
-                </div>
-              </div>
-
-              {plugin.enabled && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {plugin.tools.map((tool) => (
-                    <span
-                      key={tool}
-                      className="inline-flex items-center gap-1 rounded border border-rule bg-ground-2/60 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
-                      title={`Slash command: /tool ${tool}`}
-                    >
-                      <Wrench className="size-2.5" strokeWidth={1.5} />
-                      {tool}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <div className="font-mono text-[10.5px] text-bone-muted">
-          Type <span className="text-bone">/plugin</span> or{" "}
-          <span className="text-bone">/tool</span> in the composer to add one as
-          message context.
-        </div>
       </div>
     </div>
   );
@@ -338,13 +242,9 @@ function SlashCommandItems() {
               index={index}
               className="flex cursor-pointer flex-col gap-0.5 rounded px-2.5 py-2 text-left data-[highlighted]:bg-ember-soft"
             >
-              <span className="font-mono text-[11px] text-bone">
-                {item.label}
-              </span>
+              <span className="font-mono text-[11px] text-bone">{item.label}</span>
               {item.description && (
-                <span className="text-[10.5px] text-bone-muted">
-                  {item.description}
-                </span>
+                <span className="text-[10.5px] text-bone-muted">{item.description}</span>
               )}
             </ComposerPrimitive.Unstable_TriggerPopoverItem>
           ))}
@@ -358,10 +258,7 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
   const isRunning = useChatStore((s) => s.isRunning);
   const slashCommands = useMemo<Unstable_SlashCommand[]>(() => {
     return createPluginContextCommands(plugins.filter((p) => p.enabled)).map(
-      (command) => ({
-        ...command,
-        execute: () => undefined,
-      })
+      (command) => ({ ...command, execute: () => undefined })
     );
   }, [plugins]);
 
@@ -420,274 +317,40 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
 }
 
 export function Chat() {
-  const systemPrompts = useChatStore((s) => s.systemPrompts);
-  const activeSystemPromptId = useChatStore((s) => s.activeSystemPromptId);
-  const selectSystemPrompt = useChatStore((s) => s.selectSystemPrompt);
-  const createSystemPrompt = useChatStore((s) => s.createSystemPrompt);
-  const updateSystemPrompt = useChatStore((s) => s.updateSystemPrompt);
   const isRunning = useChatStore((s) => s.isRunning);
-  
   const plugins = useChatStore((s) => s.plugins);
-  const togglePlugin = useChatStore((s) => s.togglePlugin);
-
-  const activeSystemPrompt =
-    systemPrompts.find((prompt) => prompt.id === activeSystemPromptId) ?? null;
-  const [promptEditorOpen, setPromptEditorOpen] = useState(false);
-  const [promptEditing, setPromptEditing] = useState(false);
-  const [promptCreating, setPromptCreating] = useState(false);
-  const [draftPromptName, setDraftPromptName] = useState("");
-  const [draftPromptContent, setDraftPromptContent] = useState("");
-  const [pluginsOpen, setPluginsOpen] = useState(false);
-
-  const openPromptEditor = () => {
-    if (!activeSystemPrompt) return;
-    setDraftPromptName(activeSystemPrompt.name);
-    setDraftPromptContent(activeSystemPrompt.content);
-    setPromptEditorOpen(true);
-    setPromptEditing(false);
-    setPromptCreating(false);
-  };
-
-  const startNewPrompt = () => {
-    setDraftPromptName("New prompt");
-    setDraftPromptContent(activeSystemPrompt?.content ?? "");
-    setPromptEditorOpen(true);
-    setPromptEditing(true);
-    setPromptCreating(true);
-  };
-
-  const savePrompt = async () => {
-    if (!draftPromptName.trim() || !draftPromptContent.trim()) {
-      return;
-    }
-    if (promptCreating) {
-      await createSystemPrompt(draftPromptName.trim(), draftPromptContent);
-      setPromptCreating(false);
-      setPromptEditing(false);
-      return;
-    }
-    if (!activeSystemPrompt) return;
-    await updateSystemPrompt(
-      activeSystemPrompt.id,
-      draftPromptName.trim(),
-      draftPromptContent
-    );
-    setPromptEditing(false);
-  };
+  const rightOpen = useUIStore((s) => s.rightOpen);
+  const toggleRight = useUIStore((s) => s.toggleRight);
 
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-ground">
-      <div className="shrink-0 border-b border-rule">
-        <header className="flex items-center gap-3 px-6 py-3.5">
-          <span className="size-1.5 rounded-full bg-ember" />
-          <span className="font-display text-base italic text-bone">
-            studio
-          </span>
-          <span className="flex-1" />
-          <button
-            type="button"
-            onClick={() => setPluginsOpen((open) => !open)}
-            className={cn(
-              "group flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-left transition-colors",
-              pluginsOpen
-                ? "border-ember/50 bg-ember-soft text-bone"
-                : "border-rule bg-ground-2/45 text-bone-dim hover:border-rule-strong hover:bg-ground-2 hover:text-bone"
-            )}
-          >
-            <Plug className="size-3" strokeWidth={1.6} />
-            <span className="smallcaps text-[9.5px]">plugins</span>
-            <span className="font-mono text-[11px]">
-              {plugins.length} / {plugins.reduce((sum, p) => sum + p.tools.length, 0)}
-            </span>
-            <ChevronDown
-              className={cn(
-                "size-3 shrink-0 transition-transform",
-                pluginsOpen && "rotate-180"
-              )}
-              strokeWidth={1.6}
-            />
-          </button>
-          <button
-            type="button"
-            disabled={systemPrompts.length === 0 || isRunning}
-            onClick={openPromptEditor}
-            className={cn(
-              "group flex max-w-[17rem] shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-left transition-colors disabled:opacity-40",
-              promptEditorOpen
-                ? "border-ember/50 bg-ember-soft text-bone"
-                : "border-rule bg-ground-2/45 text-bone-dim hover:border-rule-strong hover:bg-ground-2 hover:text-bone"
-            )}
-          >
-            <span className="size-1.5 shrink-0 rounded-full bg-ember" />
-            <span className="smallcaps text-[9.5px]">prompt</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-              {activeSystemPrompt?.name ?? "loading"}
-            </span>
-            <ChevronDown
-              className={cn(
-                "size-3 shrink-0 transition-transform",
-                promptEditorOpen && "rotate-180"
-              )}
-              strokeWidth={1.6}
-            />
-          </button>
-        </header>
+      <header className="shrink-0 border-b border-rule flex items-center gap-3 px-6 py-3.5">
+        <span className="size-1.5 rounded-full bg-ember" />
+        <span className="font-display text-base italic text-bone">studio</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={toggleRight}
+          title={rightOpen ? "close workspace" : "open workspace"}
+          aria-label={rightOpen ? "close workspace" : "open workspace"}
+          className={cn(
+            "rounded p-1.5 transition-colors",
+            rightOpen
+              ? "text-bone-muted hover:bg-ground-2 hover:text-bone"
+              : "text-ember hover:bg-ember-soft"
+          )}
+        >
+          <PanelRight className="size-4" strokeWidth={1.6} />
+        </button>
+      </header>
 
-        {pluginsOpen && (
-          <PluginPanel plugins={plugins} onToggle={togglePlugin} />
-        )}
-
-        {promptEditorOpen && activeSystemPrompt && (
-          <div className="border-t border-rule bg-ground-2/30 px-6 py-4">
-            <div className="mx-auto grid max-w-[44rem] gap-4 md:grid-cols-[13rem_minmax(0,1fr)]">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="smallcaps">prompt presets</span>
-                  <button
-                    type="button"
-                    onClick={startNewPrompt}
-                    className="rounded px-1.5 py-0.5 font-mono text-[10.5px] text-bone-muted hover:bg-ground-2 hover:text-bone"
-                  >
-                    new
-                  </button>
-                </div>
-                <div className="space-y-1 rounded border border-rule bg-ground/45 p-1">
-                  {systemPrompts.map((prompt) => {
-                    const active = prompt.id === activeSystemPromptId;
-                    return (
-                      <button
-                        key={prompt.id}
-                        type="button"
-                        onClick={() => {
-                          selectSystemPrompt(prompt.id).catch(() => undefined);
-                          setDraftPromptName(prompt.name);
-                          setDraftPromptContent(prompt.content);
-                          setPromptEditing(false);
-                          setPromptCreating(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11.5px] transition-colors",
-                          active
-                            ? "bg-ember-soft text-bone"
-                            : "text-bone-dim hover:bg-ground-2 hover:text-bone"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "size-1.5 shrink-0 rounded-full",
-                            active ? "bg-ember" : "bg-bone-muted"
-                          )}
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {prompt.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="min-w-0 rounded border border-rule bg-ground/55">
-                <div className="flex items-center gap-2 border-b border-rule px-3 py-2">
-                  <div className="min-w-0 flex-1">
-                    <span className="smallcaps block">
-                      {promptCreating ? "new system prompt" : "active system prompt"}
-                    </span>
-                    <span className="block truncate font-display text-lg italic text-bone">
-                      {promptCreating ? draftPromptName : activeSystemPrompt.name}
-                    </span>
-                  </div>
-                  {!promptEditing ? (
-                    <button
-                      type="button"
-                      onClick={() => setPromptEditing(true)}
-                      className="rounded border border-rule px-2 py-1 font-mono text-[11px] text-bone-muted hover:bg-ground-2 hover:text-bone"
-                    >
-                      edit
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => savePrompt().catch(() => undefined)}
-                      className="rounded bg-ember px-2 py-1 font-mono text-[11px] text-ground hover:opacity-90"
-                    >
-                      save
-                    </button>
-                  )}
-                </div>
-
-                <div className="space-y-2 p-3">
-                  {promptEditing ? (
-                    <>
-                      <input
-                        value={draftPromptName}
-                        onChange={(e) => setDraftPromptName(e.target.value)}
-                        className="w-full rounded border border-rule bg-ground-2 px-2 py-1.5 text-xs text-bone outline-none focus:border-ember/60"
-                      />
-                      <textarea
-                        value={draftPromptContent}
-                        onChange={(e) => setDraftPromptContent(e.target.value)}
-                        rows={10}
-                        className="w-full resize-y rounded border border-rule bg-ground-2 px-2 py-2 font-mono text-[11px] leading-relaxed text-bone outline-none focus:border-ember/60"
-                      />
-                    </>
-                  ) : (
-                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-ground-2/70 p-3 font-mono text-[11px] leading-relaxed text-bone-dim">
-                      {activeSystemPrompt.content}
-                    </pre>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between border-t border-rule px-3 py-2">
-                  <span className="font-mono text-[10px] text-bone-muted">
-                    per-chat prompt
-                  </span>
-                  <div className="flex gap-2">
-                    {promptEditing && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPromptEditing(false);
-                          setPromptCreating(false);
-                          setDraftPromptName(activeSystemPrompt.name);
-                          setDraftPromptContent(activeSystemPrompt.content);
-                        }}
-                        className="rounded px-2 py-1 text-[11px] text-bone-muted hover:bg-ground-2 hover:text-bone"
-                      >
-                        cancel
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setPromptEditorOpen(false)}
-                      className="rounded px-2 py-1 text-[11px] text-bone-muted hover:bg-ground-2 hover:text-bone"
-                    >
-                      close
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <ThreadPrimitive.Viewport
-        autoScroll
-        className="flex-1 min-h-0 overflow-y-auto"
-      >
+      <ThreadPrimitive.Viewport autoScroll className="flex-1 min-h-0 overflow-y-auto">
         <ThreadPrimitive.Empty>
           <EmptyState />
         </ThreadPrimitive.Empty>
-
         <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            AssistantMessage,
-            EditComposer,
-          }}
+          components={{ UserMessage, AssistantMessage, EditComposer }}
         />
-
         <div className="h-6" />
       </ThreadPrimitive.Viewport>
 

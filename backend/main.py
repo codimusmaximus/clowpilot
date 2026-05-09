@@ -318,6 +318,20 @@ def put_conversation_plugin(
     return {"ok": True}
 
 
+class ToolToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/conversations/{conversation_id}/plugins/{plugin_id}/tools/{tool_name}")
+def put_conversation_tool(
+    conversation_id: str, plugin_id: str, tool_name: str, req: ToolToggleRequest
+):
+    if not db.conversation_exists(conversation_id):
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+    db.set_conversation_tool_enabled(conversation_id, plugin_id, tool_name, req.enabled)
+    return {"ok": True}
+
+
 # ---------- workspace ----------
 
 

@@ -54,6 +54,7 @@ type ChatState = {
   updateSystemPrompt: (id: string, name: string, content: string) => Promise<void>;
   fetchPlugins: () => Promise<void>;
   togglePlugin: (pluginId: string, enabled: boolean) => Promise<void>;
+  toggleTool: (pluginId: string, toolName: string, enabled: boolean) => Promise<void>;
   createProject: (name: string, systemPromptId?: string | null) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   send: (text: string, parentId: string | null) => Promise<void>;
@@ -389,6 +390,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
     } catch (err) {
       console.error("togglePlugin failed", err);
+    }
+  },
+
+  toggleTool: async (pluginId, toolName, enabled) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    try {
+      const { toggleConversationTool } = await import("./api");
+      await toggleConversationTool(conversationId, pluginId, toolName, enabled);
+      set((s) => ({
+        plugins: s.plugins.map((p) =>
+          p.id === pluginId
+            ? { ...p, toolsEnabled: { ...p.toolsEnabled, [toolName]: enabled } }
+            : p
+        ),
+      }));
+    } catch (err) {
+      console.error("toggleTool failed", err);
     }
   },
 

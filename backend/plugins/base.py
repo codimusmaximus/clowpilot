@@ -28,4 +28,5 @@ class PluginSpec:
     type: PluginType
     tools: list[ToolSpec] = field(default_factory=list)
     instructions: str = ""
+    description: str = ""
     config_schema: dict[str, Any] | None = None

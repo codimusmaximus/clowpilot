@@ -1,7 +1,8 @@
 "use client";
 
 import { createElement, useEffect, useMemo, useRef, useState } from "react";
-import { X, FileText, Sparkles } from "lucide-react";
+import { X, FileText, Sparkles, PanelRight } from "lucide-react";
+import { useUIStore } from "@/lib/ui-store";
 import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspace-store";
 import type { FileTab, Highlight, SnippetTab, Tab } from "@/lib/types";
@@ -29,6 +30,7 @@ export function Workspace() {
   const closeTab = useWorkspace((s) => s.closeTab);
   const highlights = useWorkspace((s) => s.highlights);
   const removeHighlight = useWorkspace((s) => s.removeHighlight);
+  const toggleRight = useUIStore((s) => s.toggleRight);
 
   const activeTab = useMemo(
     () => tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null,
@@ -39,9 +41,19 @@ export function Workspace() {
     <div className="flex h-full min-h-0 flex-col border-l border-rule bg-ground-2/20">
       <header className="flex h-[49px] shrink-0 items-center px-5">
         <span className="smallcaps">workspace</span>
-        <span className="ml-auto font-mono text-[10.5px] text-bone-muted">
+        <span className="ml-2 font-mono text-[10.5px] text-bone-muted">
           {tabs.length === 0 ? "empty" : `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`}
         </span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={toggleRight}
+          title="close workspace"
+          aria-label="close workspace"
+          className="rounded p-1.5 text-bone-muted hover:bg-ground-2 hover:text-bone"
+        >
+          <PanelRight className="size-4" strokeWidth={1.6} />
+        </button>
       </header>
 
       {tabs.length > 0 && (

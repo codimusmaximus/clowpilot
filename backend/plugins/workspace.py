@@ -45,6 +45,7 @@ def get_plugin() -> PluginSpec:
         id="core.workspace",
         name="Workspace",
         type="core",
+        description="Display files, highlights, and snippets in the workspace pane.",
         instructions=INSTRUCTIONS,
         tools=[
             ToolSpec("display", display),

@@ -39,10 +39,10 @@ def load_plugins() -> list[PluginSpec]:
 
 
 def is_enabled(plugin: PluginSpec, conversation_id: str | None = None) -> bool:
-    if plugin.type == "core":
-        return True
     if conversation_id:
         return db.is_plugin_enabled_for_conversation(conversation_id, plugin.id)
+    if plugin.type == "core":
+        return True
     return db.is_plugin_enabled(plugin.id)
 
 
@@ -51,7 +51,14 @@ def enabled_plugins(conversation_id: str | None = None) -> list[PluginSpec]:
 
 
 def tools(conversation_id: str | None = None) -> list[ToolSpec]:
-    return [tool for plugin in enabled_plugins(conversation_id) for tool in plugin.tools]
+    result = []
+    for plugin in enabled_plugins(conversation_id):
+        if conversation_id:
+            disabled = set(db.get_conversation_disabled_tools(conversation_id, plugin.id))
+            result.extend(t for t in plugin.tools if t.name not in disabled)
+        else:
+            result.extend(plugin.tools)
+    return result
 
 
 def instructions(conversation_id: str | None = None) -> str:
@@ -75,7 +82,15 @@ def list_plugin_status(conversation_id: str | None = None) -> list[dict[str, Any
                 "enabled": is_enabled(plugin, conversation_id),
                 "config": config,
                 "configSchema": plugin.config_schema,
+                "description": plugin.description,
                 "tools": [tool.name for tool in plugin.tools],
+                "toolsEnabled": {
+                    tool.name: tool.name not in set(
+                        db.get_conversation_disabled_tools(conversation_id, plugin.id)
+                        if conversation_id else []
+                    )
+                    for tool in plugin.tools
+                },
             }
         )
     return rows

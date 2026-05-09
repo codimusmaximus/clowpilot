@@ -68,9 +68,11 @@ export type PluginStatus = {
   name: string;
   type: "core" | "external";
   enabled: boolean;
+  description?: string;
   config: Record<string, unknown>;
   configSchema: Record<string, unknown> | null;
   tools: string[];
+  toolsEnabled?: Record<string, boolean>;
 };
 
 export type FileNode = {

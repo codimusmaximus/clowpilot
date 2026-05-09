@@ -235,6 +235,23 @@ export async function toggleConversationPlugin(
   if (!res.ok) throw new Error(`plugin toggle failed: ${res.status}`);
 }
 
+export async function toggleConversationTool(
+  conversationId: string,
+  pluginId: string,
+  toolName: string,
+  enabled: boolean
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/plugins/${encodeURIComponent(pluginId)}/tools/${encodeURIComponent(toolName)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }
+  );
+  if (!res.ok) throw new Error(`tool toggle failed: ${res.status}`);
+}
+
 export async function fetchModels(): Promise<{
   models: ModelInfo[];
   activeModel: string;
