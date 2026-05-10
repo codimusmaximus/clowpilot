@@ -921,9 +921,10 @@ def _title_from_messages(messages: list[dict[str, Any]]) -> str | None:
 
 
 def _normalize_message_for_storage(message: dict[str, Any]) -> dict[str, Any]:
-    attachments = message.get("attachments", [])
+    parts = message.get("parts")
+    attachments = message.get("attachments")
     return {
-        "parts": list(message.get("parts", [])),
+        "parts": list(parts) if parts else [],
         "attachments": list(attachments) if attachments else [],
     }
 
