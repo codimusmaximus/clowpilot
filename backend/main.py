@@ -60,6 +60,7 @@ class ChatPart(BaseModel):
 class ChatMessage(BaseModel):
     role: str
     content: str | list[ChatPart]
+    attachments: list[dict[str, Any]] | None = None
 
 
 class AppMessage(BaseModel):
@@ -68,6 +69,21 @@ class AppMessage(BaseModel):
     parts: list[dict[str, Any]]
     createdAt: int
     parentId: str | None = None
+
+
+class AttachmentUploadResponse(BaseModel):
+    id: str
+    path: str
+    name: str
+    contentType: str
+    kind: str
+    bytes: int
+    createdAt: int
+    updatedAt: int
+
+
+class AttachmentListResponse(BaseModel):
+    attachments: list[AttachmentUploadResponse]
 
 
 class ChatRequest(BaseModel):
@@ -361,12 +377,41 @@ def get_file(path: str):
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile, folder: str = ""):
-    tools._safe_path(folder) if folder else tools.WORKSPACE
+async def upload(
+    file: UploadFile,
+    folder: str = "",
+    conversationId: str | None = None,
+):
+    if folder:
+        tools._safe_path(folder)
+    raw = await file.read()
     name = Path(file.filename or "upload.bin").name
+    content_type = file.content_type or "application/octet-stream"
+
+    if conversationId or not content_type.startswith("text/"):
+        target = tools.attachment_path(name, conversationId)
+        target.write_bytes(raw)
+        rel = tools.relative_workspace_path(target)
+        extracted = tools.extract_text_for_attachment(target, content_type, raw)
+        kind = tools._ext_kind(target)
+        return db.upsert_attachment(
+            path=rel,
+            name=name,
+            content_type=content_type,
+            kind=kind,
+            bytes_count=len(raw),
+            extracted_text=extracted,
+            conversation_id=conversationId,
+        )
+
     rel = f"{folder.strip('/')}/{name}".strip("/")
-    content = (await file.read()).decode("utf-8", errors="replace")
+    content = raw.decode("utf-8", errors="replace")
     return db.upsert_file(rel, content, tools._ext_kind(Path(name)))
+
+
+@app.get("/api/attachments")
+def get_attachments(conversationId: str | None = None):
+    return {"attachments": db.list_attachments(conversationId)}
 
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}

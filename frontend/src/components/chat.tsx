@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import {
+  AttachmentPrimitive,
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
@@ -18,8 +19,10 @@ import {
   ChevronRight,
   Pencil,
   PanelRight,
+  Paperclip,
   Square,
   Sparkles,
+  X,
 } from "lucide-react";
 import { Markdown } from "./markdown";
 import { ToolCallCard } from "./tool-call";
@@ -115,6 +118,7 @@ function UserMessage() {
           <span className="smallcaps">you</span>
         </div>
         <div className="flex-1 overflow-x-auto text-bone">
+          <MessagePrimitive.Attachments components={{ Attachment: MessageAttachment }} />
           <MessagePrimitive.Parts components={partsConfig} />
           <BranchNav />
         </div>
@@ -135,6 +139,33 @@ function UserMessage() {
         </ActionBarPrimitive.Root>
       </div>
     </MessagePrimitive.Root>
+  );
+}
+
+function MessageAttachment() {
+  return (
+    <AttachmentPrimitive.Root className="mb-2 flex items-center gap-2 rounded border border-rule bg-ground-2/40 px-3 py-2 text-xs">
+      <Paperclip className="size-3.5 text-bone-muted" strokeWidth={1.6} />
+      <AttachmentPrimitive.Name className="truncate font-mono text-[11px] text-bone" />
+    </AttachmentPrimitive.Root>
+  );
+}
+
+function ComposerAttachment() {
+  return (
+    <AttachmentPrimitive.Root className="flex items-center gap-2 rounded border border-rule bg-ground px-2 py-1 text-[11px]">
+      <Paperclip className="size-3 text-bone-muted" strokeWidth={1.6} />
+      <AttachmentPrimitive.Name className="max-w-48 truncate font-mono text-bone" />
+      <AttachmentPrimitive.Remove asChild>
+        <button
+          type="button"
+          aria-label="remove attachment"
+          className="rounded p-0.5 text-bone-muted hover:bg-ground-2 hover:text-bone"
+        >
+          <X className="size-3" strokeWidth={1.6} />
+        </button>
+      </AttachmentPrimitive.Remove>
+    </AttachmentPrimitive.Root>
   );
 }
 
@@ -266,50 +297,64 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
 
   return (
     <div className="border-t border-rule bg-ground/95 px-6 py-4 backdrop-blur">
-      <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-[44rem] items-end gap-2 rounded border border-rule-strong bg-ground-2/40 px-3 py-2 transition-colors focus-within:border-ember/60">
-          <ComposerPrimitive.Input
-            autoFocus
-            rows={1}
-            placeholder="Ask the studio… type / for plugins and tools"
-            data-gramm="false"
-            data-gramm_editor="false"
-            data-enable-grammarly="false"
-            className={cn(
-              "composer-input max-h-40 flex-1 resize-none rounded-none bg-transparent py-1.5 text-sm text-bone placeholder:text-bone-muted focus:outline-none focus-visible:outline-none"
-            )}
-          />
-          {isRunning ? (
-            <button
-              type="button"
-              aria-label="stop"
-              onClick={() => useChatStore.getState().stopGeneration()}
-              className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2 hover:text-bone"
-            >
-              <Square className="size-3" strokeWidth={1.6} fill="currentColor" />
-            </button>
-          ) : (
-            <ComposerPrimitive.Send asChild>
-              <button
-                type="submit"
-                aria-label="send"
-                className="flex size-7 items-center justify-center rounded bg-ember text-ground transition-opacity hover:opacity-90 disabled:opacity-30"
-              >
-                <ArrowUp className="size-3.5" strokeWidth={2} />
-              </button>
-            </ComposerPrimitive.Send>
-          )}
+      <ComposerPrimitive.AttachmentDropzone className="mx-auto w-full max-w-[44rem]">
+        <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+          <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-[44rem] flex-col gap-2 rounded border border-rule-strong bg-ground-2/40 px-3 py-2 transition-colors focus-within:border-ember/60">
+            <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
+            <div className="flex items-end gap-2">
+              <ComposerPrimitive.AddAttachment asChild>
+                <button
+                  type="button"
+                  aria-label="add attachment"
+                  className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2 hover:text-bone"
+                >
+                  <Paperclip className="size-3.5" strokeWidth={1.6} />
+                </button>
+              </ComposerPrimitive.AddAttachment>
+              <ComposerPrimitive.Input
+                autoFocus
+                rows={1}
+                placeholder="Ask the studio… type / for plugins and tools"
+                data-gramm="false"
+                data-gramm_editor="false"
+                data-enable-grammarly="false"
+                className={cn(
+                  "composer-input max-h-40 flex-1 resize-none rounded-none bg-transparent py-1.5 text-sm text-bone placeholder:text-bone-muted focus:outline-none focus-visible:outline-none"
+                )}
+              />
+              {isRunning ? (
+                <button
+                  type="button"
+                  aria-label="stop"
+                  onClick={() => useChatStore.getState().stopGeneration()}
+                  className="flex size-7 items-center justify-center rounded border border-rule text-bone-dim hover:bg-ground-2 hover:text-bone"
+                >
+                  <Square className="size-3" strokeWidth={1.6} fill="currentColor" />
+                </button>
+              ) : (
+                <ComposerPrimitive.Send asChild>
+                  <button
+                    type="submit"
+                    aria-label="send"
+                    className="flex size-7 items-center justify-center rounded bg-ember text-ground transition-opacity hover:opacity-90 disabled:opacity-30"
+                  >
+                    <ArrowUp className="size-3.5" strokeWidth={2} />
+                  </button>
+                </ComposerPrimitive.Send>
+              )}
+            </div>
 
-          <ComposerPrimitive.Unstable_TriggerPopover
-            char="/"
-            adapter={slash.adapter}
-            className="absolute bottom-full left-0 z-50 mb-2"
-          >
-            <ComposerPrimitive.Unstable_TriggerPopover.Action {...slash.action} />
-            <SlashCommandItems />
-          </ComposerPrimitive.Unstable_TriggerPopover>
-        </ComposerPrimitive.Root>
-      </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+            <ComposerPrimitive.Unstable_TriggerPopover
+              char="/"
+              adapter={slash.adapter}
+              className="absolute bottom-full left-0 z-50 mb-2"
+            >
+              <ComposerPrimitive.Unstable_TriggerPopover.Action {...slash.action} />
+              <SlashCommandItems />
+            </ComposerPrimitive.Unstable_TriggerPopover>
+          </ComposerPrimitive.Root>
+        </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      </ComposerPrimitive.AttachmentDropzone>
       <p className="mx-auto mt-2 max-w-[44rem] text-[10.5px] text-bone-muted">
         <span className="font-mono">⌘↵</span> to send · the assistant uses
         tools to act on the workspace · <span className="font-mono">/</span>{" "}

@@ -1,4 +1,5 @@
 import type {
+  AttachmentRecord,
   AppMessage,
   Conversation,
   FileNode,
@@ -6,6 +7,7 @@ import type {
   PluginStatus,
   Project,
   SystemPrompt,
+  UploadedAttachment,
 } from "./types";
 
 export const API_BASE =
@@ -60,6 +62,35 @@ export async function uploadFile(file: File, folder = ""): Promise<void> {
   }`;
   const res = await fetch(url, { method: "POST", body: fd });
   if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+}
+
+export async function uploadAttachment(
+  file: File,
+  conversationId?: string | null,
+): Promise<UploadedAttachment> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const query = conversationId
+    ? `?conversationId=${encodeURIComponent(conversationId)}`
+    : "";
+  const res = await fetch(`${API_BASE}/api/upload${query}`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!res.ok) throw new Error(`attachment upload failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAttachments(
+  conversationId?: string | null,
+): Promise<UploadedAttachment[]> {
+  const query = conversationId
+    ? `?conversationId=${encodeURIComponent(conversationId)}`
+    : "";
+  const res = await fetch(`${API_BASE}/api/attachments${query}`);
+  if (!res.ok) throw new Error(`attachments fetch failed: ${res.status}`);
+  const data = (await res.json()) as { attachments: UploadedAttachment[] };
+  return data.attachments;
 }
 
 export async function fetchConversations(): Promise<{
@@ -146,6 +177,30 @@ export async function saveMessages(
     }
   );
   if (!res.ok) throw new Error(`messages save failed: ${res.status}`);
+}
+
+export function uploadedAttachmentToRecord(
+  attachment: UploadedAttachment,
+): AttachmentRecord {
+  const contentType = attachment.contentType || "application/octet-stream";
+  const name = attachment.name || attachment.path || "attachment";
+  const path = attachment.path || "";
+  return {
+    id: attachment.id,
+    type: contentType.startsWith("image/") ? "image" : "document",
+    name,
+    contentType,
+    path,
+    content: [
+      {
+        type: "file",
+        data: path,
+        mimeType: contentType,
+        filename: name,
+      },
+    ],
+    status: { type: "complete" },
+  };
 }
 
 export async function fetchSystemPrompts(): Promise<{

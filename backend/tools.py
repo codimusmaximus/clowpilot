@@ -7,6 +7,7 @@ rejected if they escape the sandbox.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +17,8 @@ import db
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "./workspace")).resolve()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 WORKSPACE_NAME = WORKSPACE.name
+ATTACHMENTS_DIR = Path(os.environ.get("ATTACHMENTS_DIR", WORKSPACE / "attachments")).resolve()
+ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---------- path helpers ----------
@@ -60,6 +63,31 @@ def _ext_kind(path: Path) -> str:
         "png": "image", "jpg": "image", "jpeg": "image",
         "gif": "image", "webp": "image", "svg": "image",
     }.get(e, "text")
+
+
+def attachment_path(name: str, conversation_id: str | None = None) -> Path:
+    safe_name = Path(name or "upload.bin").name
+    if conversation_id:
+        target = ATTACHMENTS_DIR / conversation_id / safe_name
+    else:
+        target = ATTACHMENTS_DIR / safe_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def relative_workspace_path(path: Path) -> str:
+    return str(path.resolve().relative_to(WORKSPACE))
+
+
+def extract_text_for_attachment(path: Path, content_type: str, raw_bytes: bytes) -> str:
+    if content_type.startswith("text/") or path.suffix.lower() in {".md", ".txt", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".jsx", ".html", ".css", ".sql", ".yaml", ".yml"}:
+        return raw_bytes.decode("utf-8", errors="replace")
+    if path.suffix.lower() == ".pdf":
+        # Lightweight fallback extraction from PDF content streams.
+        decoded = raw_bytes.decode("latin-1", errors="ignore")
+        text = " ".join(re.findall(r"\(([^()]*)\)", decoded))
+        return text.strip()
+    return ""
 
 
 # ---------- disk helpers ----------

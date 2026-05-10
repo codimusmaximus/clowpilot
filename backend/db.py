@@ -48,7 +48,7 @@ def init() -> None:
             );
             CREATE TABLE IF NOT EXISTS chunks (
                 id          TEXT PRIMARY KEY,
-                file_path   TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE ON UPDATE CASCADE,
+                file_path   TEXT NOT NULL,
                 chunk_index INTEGER NOT NULL,
                 content     TEXT NOT NULL,
                 metadata    TEXT NOT NULL DEFAULT '{}',
@@ -56,22 +56,32 @@ def init() -> None:
                 UNIQUE(file_path, chunk_index)
             );
             CREATE INDEX IF NOT EXISTS chunks_file ON chunks(file_path);
+
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT,
+                path TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                bytes INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS attachments_conversation_id ON attachments(conversation_id);
             """
         )
-        # Migrate existing chunks table if it lacks ON UPDATE CASCADE
+        # Migrate existing chunks table if it still carries the legacy foreign key to files.
         chunks_info = conn.execute("PRAGMA foreign_key_list(chunks)").fetchall()
-        has_on_update_cascade = any(
-            row["on_update"] == "CASCADE" and row["table"] == "files"
-            for row in chunks_info
-        )
-        if not has_on_update_cascade and chunks_info:
-            # We need to recreate the table to add ON UPDATE CASCADE
+        has_file_fk = any(row["table"] == "files" for row in chunks_info)
+        if has_file_fk:
             conn.executescript(
                 """
                 DROP TABLE chunks;
                 CREATE TABLE chunks (
                     id          TEXT PRIMARY KEY,
-                    file_path   TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE ON UPDATE CASCADE,
+                    file_path   TEXT NOT NULL,
                     chunk_index INTEGER NOT NULL,
                     content     TEXT NOT NULL,
                     metadata    TEXT NOT NULL DEFAULT '{}',
@@ -401,6 +411,121 @@ def list_files() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def upsert_attachment(
+    *,
+    path: str,
+    name: str,
+    content_type: str,
+    kind: str,
+    bytes_count: int,
+    extracted_text: str,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    now = int(time.time() * 1000)
+    attachment_id = get_attachment_id_by_path(path) or str(uuid.uuid4())
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments (
+                id, conversation_id, path, name, content_type, kind, bytes,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                conversation_id = excluded.conversation_id,
+                name = excluded.name,
+                content_type = excluded.content_type,
+                kind = excluded.kind,
+                bytes = excluded.bytes,
+                updated_at = excluded.updated_at
+            """,
+            (
+                attachment_id,
+                conversation_id,
+                path,
+                name,
+                content_type,
+                kind,
+                bytes_count,
+                now,
+                now,
+            ),
+        )
+    if extracted_text.strip():
+        index_file(path, extracted_text, kind)
+    return get_attachment(attachment_id) or {
+        "id": attachment_id,
+        "conversationId": conversation_id,
+        "path": path,
+        "name": name,
+        "contentType": content_type,
+        "kind": kind,
+        "bytes": bytes_count,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_attachment_id_by_path(path: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM attachments WHERE path = ?", (path,)).fetchone()
+    return str(row["id"]) if row else None
+
+
+def get_attachment(attachment_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+             SELECT id, conversation_id, path, name, content_type, kind, bytes,
+                 created_at, updated_at
+            FROM attachments
+            WHERE id = ?
+            """,
+            (attachment_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "conversationId": row["conversation_id"],
+        "path": row["path"],
+        "name": row["name"],
+        "contentType": row["content_type"],
+        "kind": row["kind"],
+        "bytes": row["bytes"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_attachments(conversation_id: str | None = None) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT id, conversation_id, path, name, content_type, kind, bytes, created_at, updated_at "
+        "FROM attachments"
+    )
+    params: tuple[Any, ...] = ()
+    if conversation_id is not None:
+        sql += " WHERE conversation_id = ?"
+        params = (conversation_id,)
+    sql += " ORDER BY updated_at DESC"
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "conversationId": row["conversation_id"],
+            "path": row["path"],
+            "name": row["name"],
+            "contentType": row["content_type"],
+            "kind": row["kind"],
+            "bytes": row["bytes"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
 def list_folders() -> list[str]:
     with _connect() as conn:
         rows = conn.execute("SELECT path FROM folders ORDER BY path COLLATE NOCASE").fetchall()
@@ -414,6 +539,10 @@ def delete_path(path: str) -> int:
         )
         folder_cursor = conn.execute(
             "DELETE FROM folders WHERE path = ? OR path LIKE ?", (path, f"{path}/%")
+        )
+        conn.execute(
+            "DELETE FROM chunks WHERE file_path = ? OR file_path LIKE ?",
+            (path, f"{path}/%"),
         )
     return int(file_cursor.rowcount) + int(folder_cursor.rowcount)
 
@@ -479,6 +608,7 @@ def move_path(source: str, destination: str) -> dict[str, Any]:
 
         if is_file:
             conn.execute("UPDATE files SET path = ? WHERE path = ?", (new_rel, src_rel))
+            conn.execute("UPDATE chunks SET file_path = ? WHERE file_path = ?", (new_rel, src_rel))
             moved_files = 1
         else:
             conn.execute("UPDATE folders SET path = ? WHERE path = ?", (new_rel, src_rel))
@@ -490,6 +620,7 @@ def move_path(source: str, destination: str) -> dict[str, Any]:
                 old = str(row["path"])
                 new = new_rel + old[len(src_rel):]
                 conn.execute("UPDATE files SET path = ? WHERE path = ?", (new, old))
+                conn.execute("UPDATE chunks SET file_path = ? WHERE file_path = ?", (new, old))
                 moved_files += 1
 
             for row in conn.execute(
@@ -740,6 +871,13 @@ def _title_from_messages(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _normalize_message_for_storage(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "parts": list(message.get("parts", [])),
+        "attachments": list(message.get("attachments", [])),
+    }
+
+
 def replace_messages(
     conversation_id: str,
     messages: list[dict[str, Any]],
@@ -762,7 +900,7 @@ def replace_messages(
                     m["id"],
                     conversation_id,
                     m["role"],
-                    json.dumps(m.get("parts", [])),
+                    json.dumps(_normalize_message_for_storage(m)),
                     int(m.get("createdAt", 0)),
                     i,
                     m.get("parentId"),
@@ -805,10 +943,18 @@ def get_messages(conversation_id: str) -> list[dict[str, Any]]:
         # Backfill parentId for legacy messages that predate branch support
         if parent_id is None and i > 0:
             parent_id = rows[i - 1]["id"]
+        stored = json.loads(row["parts"])
+        if isinstance(stored, dict):
+            parts = stored.get("parts", [])
+            attachments = stored.get("attachments", [])
+        else:
+            parts = stored
+            attachments = []
         result.append({
             "id": row["id"],
             "role": row["role"],
-            "parts": json.loads(row["parts"]),
+            "parts": parts,
+            "attachments": attachments,
             "createdAt": row["created_at"],
             "parentId": parent_id,
         })

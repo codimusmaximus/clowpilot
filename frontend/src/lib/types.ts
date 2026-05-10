@@ -26,10 +26,28 @@ export type ToolCallPart = {
 
 export type TextPart = { type: "text"; text: string };
 
+export type AttachmentContentPart = {
+  type: "file";
+  data: string;
+  mimeType: string;
+  filename?: string;
+};
+
+export type AttachmentRecord = {
+  id: string;
+  type: "file" | "document" | "image";
+  name: string;
+  contentType?: string;
+  path?: string;
+  content: AttachmentContentPart[];
+  status?: { type: "complete" };
+};
+
 export type AppMessage = {
   id: string;
   role: "user" | "assistant";
   parts: Array<TextPart | ToolCallPart>;
+  attachments?: AttachmentRecord[];
   createdAt: number;
   parentId: string | null;
 };
@@ -63,6 +81,17 @@ export type ModelInfo = {
   id: string;
   name: string;
   model: string;
+};
+
+export type UploadedAttachment = {
+  id: string;
+  path: string;
+  name: string;
+  contentType: string;
+  kind: string;
+  bytes: number;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type PluginStatus = {

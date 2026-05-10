@@ -14,6 +14,8 @@ import {
   fetchModels,
   fetchProjects,
   fetchSystemPrompts,
+  uploadedAttachmentToRecord,
+  uploadAttachment,
   workspaceImageUrl,
   saveMessages,
   setActiveModel as setActiveModelApi,
@@ -22,6 +24,7 @@ import {
 } from "./api";
 import { useWorkspace } from "./workspace-store";
 import type {
+  AttachmentRecord,
   AppMessage,
   Conversation,
   ModelInfo,
@@ -58,8 +61,8 @@ type ChatState = {
   toggleTool: (pluginId: string, toolName: string, enabled: boolean) => Promise<void>;
   createProject: (name: string, systemPromptId?: string | null) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
-  send: (text: string, parentId: string | null) => Promise<void>;
-  editMessage: (sourceId: string | null, text: string, parentId: string | null) => Promise<void>;
+  send: (text: string, parentId: string | null, attachments?: AttachmentRecord[]) => Promise<void>;
+  editMessage: (sourceId: string | null, text: string, parentId: string | null, attachments?: AttachmentRecord[]) => Promise<void>;
   setHeadId: (headId: string | null) => void;
   stopGeneration: () => void;
 };
@@ -436,12 +439,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setHeadId: (headId) => set({ headId }),
   stopGeneration: () => { _abortController?.abort(); },
 
-  editMessage: async (_sourceId, text, parentId) => {
-    await get().send(text, parentId);
+  editMessage: async (_sourceId, text, parentId, attachments) => {
+    await get().send(text, parentId, attachments);
   },
 
-  send: async (text: string, parentId: string | null) => {
-    if (!text.trim() || get().isRunning) return;
+  send: async (text: string, parentId: string | null, attachments?: AttachmentRecord[]) => {
+    if ((!text.trim() && !(attachments && attachments.length)) || get().isRunning) return;
     let conversationId = get().activeConversationId;
     if (!conversationId) {
       const conversation = await createConversationApi(
@@ -460,6 +463,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: newId(),
       role: "user",
       parts: [{ type: "text", text }],
+      attachments,
       createdAt: Date.now(),
       parentId,
     };
@@ -497,6 +501,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       result: p.result ?? null,
                     }
               ),
+        attachments: m.attachments,
       })),
     };
 
