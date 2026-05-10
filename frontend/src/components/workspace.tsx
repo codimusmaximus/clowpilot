@@ -5,17 +5,18 @@ import { X, FileText, Sparkles, PanelRight, ChevronRight, Save } from "lucide-re
 import { useUIStore } from "@/lib/ui-store";
 import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspace-store";
-import type { FileTab, Highlight, SnippetTab, Tab } from "@/lib/types";
+import type { FileTab, Highlight, ImageTab, SnippetTab, Tab } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import type { Components } from "react-markdown";
-import { remarkWikiLinks, WorkspaceAnchor } from "./markdown";
+import { remarkWikiLinks, WorkspaceAnchor, WorkspaceImage } from "./markdown";
 import { saveFile } from "@/lib/api";
 
 function tabTitle(tab: Tab) {
   if (tab.kind === "file") return tab.path.split("/").pop() ?? tab.path;
+  if (tab.kind === "image") return tab.path.split("/").pop() ?? tab.path;
   return tab.title;
 }
 
@@ -23,6 +24,19 @@ function TabIcon({ tab }: { tab: Tab }) {
   if (tab.kind === "file")
     return <FileText className="size-3" strokeWidth={1.6} />;
   return <Sparkles className="size-3" strokeWidth={1.6} />;
+}
+
+function ImageViewer({ tab }: { tab: ImageTab }) {
+  return (
+    <div className="flex h-full items-center justify-center overflow-auto bg-ground p-6">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={tab.url}
+        alt={tab.path}
+        className="max-h-full max-w-full rounded object-contain shadow"
+      />
+    </div>
+  );
 }
 
 export function Workspace() {
@@ -105,6 +119,7 @@ export function Workspace() {
             onRemoveHighlight={removeHighlight}
           />
         )}
+        {activeTab?.kind === "image" && <ImageViewer tab={activeTab} />}
         {activeTab?.kind === "snippet" && <SnippetView tab={activeTab} />}
       </div>
     </div>
@@ -367,6 +382,7 @@ function RenderedFile({
               components={{
                 ...markdownHighlightComponents(highlights, onRemoveHighlight),
                 a: WorkspaceAnchor,
+                img: WorkspaceImage,
               }}
             >
               {body}
@@ -680,6 +696,21 @@ function parseCsv(content: string) {
     });
 }
 
+/* ─── rehype plugin: strip <script> so raw HTML is safe in markdown ─── */
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function stripScripts(node: any) {
+  if (!Array.isArray(node.children)) return;
+  node.children = node.children.filter(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (c: any) => !(c.type === "element" && c.tagName === "script")
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  node.children.forEach((c: any) => stripScripts(c));
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const rehypeStripScripts = () => (tree: any) => stripScripts(tree);
+
 /* ─── snippet view ──────────────────────────────────────────────────── */
 
 function SnippetView({ tab }: { tab: SnippetTab }) {
@@ -687,9 +718,11 @@ function SnippetView({ tab }: { tab: SnippetTab }) {
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-3xl px-10 py-12">
         {tab.format === "html" ? (
-          <div
-            className="prose-snippet"
-            dangerouslySetInnerHTML={{ __html: tab.content }}
+          <iframe
+            srcDoc={tab.content}
+            sandbox="allow-scripts"
+            className="h-[600px] w-full rounded border border-rule bg-white"
+            title={tab.title}
           />
         ) : (
           <div className="prose-snippet">
@@ -698,7 +731,9 @@ function SnippetView({ tab }: { tab: SnippetTab }) {
               rehypePlugins={[
                 [rehypeHighlight, { detect: true, ignoreMissing: true }],
                 rehypeRaw,
+                rehypeStripScripts,
               ]}
+              components={{ a: WorkspaceAnchor, img: WorkspaceImage }}
             >
               {tab.content}
             </ReactMarkdown>

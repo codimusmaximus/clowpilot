@@ -20,6 +20,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { workspaceImageUrl } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace-store";
 import { useChatStore } from "@/lib/chat-store";
 import { useUIStore, type SidebarView } from "@/lib/ui-store";
@@ -41,6 +42,7 @@ export function Sidebar() {
   const setLoading = useWorkspace((s) => s.setTreeLoading);
   const loading = useWorkspace((s) => s.treeLoading);
   const openFile = useWorkspace((s) => s.openFile);
+  const openImage = useWorkspace((s) => s.openImage);
 
   const conversations = useChatStore((s) => s.conversations);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
@@ -93,7 +95,16 @@ export function Sidebar() {
     e.target.value = "";
   };
 
+  const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
+
   const handleOpenFile = async (path: string) => {
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    if (IMAGE_EXTS.has(ext)) {
+      const url = workspaceImageUrl(path);
+      openImage(path, url);
+      setRightOpen(true);
+      return;
+    }
     try {
       const f = await fetchFile(path);
       openFile(f.path, f.content, f.kind);
@@ -641,7 +652,6 @@ function SettingsPanel({
 /* ─── Conversation item ─────────────────────────────────────────────────── */
 
 function ConversationItem({
-  id,
   title,
   active,
   isRunning,

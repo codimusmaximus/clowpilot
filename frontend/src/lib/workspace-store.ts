@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { FileNode, Highlight, Tab } from "./types";
+import type { FileNode, Highlight, ImageTab, Tab } from "./types";
 
 type WorkspaceState = {
   tabs: Tab[];
@@ -27,6 +27,7 @@ type WorkspaceState = {
     format: "markdown" | "html",
     title?: string
   ) => string;
+  openImage: (path: string, url: string) => string;
   updateFileContent: (path: string, content: string) => void;
   closeFile: (path: string) => void;
 
@@ -103,6 +104,17 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
           },
         ],
       };
+    });
+    return id;
+  },
+
+  openImage: (path, url) => {
+    const id = `image:${path}`;
+    set((s) => {
+      const existing = s.tabs.find((t) => t.id === id);
+      if (existing) return { activeTabId: id };
+      const tab: ImageTab = { id, kind: "image", path, url, openedAt: Date.now() };
+      return { activeTabId: id, tabs: [...s.tabs, tab] };
     });
     return id;
   },

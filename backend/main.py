@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+import mimetypes
+
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import tools
@@ -365,6 +367,35 @@ async def upload(file: UploadFile, folder: str = ""):
     rel = f"{folder.strip('/')}/{name}".strip("/")
     content = (await file.read()).decode("utf-8", errors="replace")
     return db.upsert_file(rel, content, tools._ext_kind(Path(name)))
+
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
+
+def _workspace_image_path(path: str) -> Path:
+    raw = path.removeprefix("file://")
+    if raw == "/workspace":
+        return tools.WORKSPACE
+    if raw.startswith("/workspace/"):
+        return tools._safe_path(raw.removeprefix("/workspace/"))
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        try:
+            return tools.remap_into_workspace(candidate)
+        except ValueError as exc:
+            raise HTTPException(400, f"path escapes workspace: {path}") from exc
+    return tools._safe_path(raw)
+
+
+@app.get("/api/workspace/image")
+def get_workspace_image(path: str):
+    p = _workspace_image_path(path)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(404, f"file not found: {path}")
+    if p.suffix.lower() not in _IMAGE_EXTS:
+        raise HTTPException(400, f"not an image: {path}")
+    mime, _ = mimetypes.guess_type(str(p))
+    return FileResponse(str(p), media_type=mime or "application/octet-stream")
 
 
 @app.get("/api/search")

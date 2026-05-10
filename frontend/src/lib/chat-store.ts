@@ -14,6 +14,7 @@ import {
   fetchModels,
   fetchProjects,
   fetchSystemPrompts,
+  workspaceImageUrl,
   saveMessages,
   setActiveModel as setActiveModelApi,
   setConversationSystemPrompt,
@@ -185,6 +186,12 @@ function applyToolToWorkspace(name: string, result: unknown) {
         });
         ws.setActive(tabId);
       }
+      break;
+    }
+    case "display_image": {
+      const { path } = r as { path: string };
+      const url = workspaceImageUrl(path);
+      ws.openImage(path, url);
       break;
     }
     case "snippet": {

@@ -7,8 +7,10 @@ export type ToolName =
   | "replace_file_lines"
   | "delete_file"
   | "display_file"
+  | "display_image"
   | "highlight"
-  | "snippet";
+  | "snippet"
+  | "search";
 
 export type ToolCallStatus = "streaming" | "ready" | "executing" | "done" | "error";
 
@@ -111,4 +113,12 @@ export type SnippetTab = {
   openedAt: number;
 };
 
-export type Tab = FileTab | SnippetTab;
+export type ImageTab = {
+  id: string;
+  kind: "image";
+  path: string;
+  url: string;
+  openedAt: number;
+};
+
+export type Tab = FileTab | SnippetTab | ImageTab;
