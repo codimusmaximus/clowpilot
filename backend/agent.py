@@ -43,6 +43,7 @@ from pydantic_ai.messages import (
 )
 
 from plugins import registry as plugin_registry
+import db
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,15 @@ Working principles:
   workspace state.
 - Keep chat replies brief and grounded in the artefacts you show.
 - The workspace is where you show; chat is where you narrate.
+
+Attachments:
+- User messages may include uploaded attachments.
+- Small text-like attachments may be inlined into the user prompt automatically.
+- Larger documents are indexed into semantic search chunks and should be explored
+    with the search tool before making claims about their contents.
+- Image attachments may be stored as files and accompanied by derived text
+    descriptions for search, but you should still inspect referenced artefacts and
+    search results before relying on them.
 
 Images — only two valid forms:
 1. Workspace file:  ![description](relative/path.png)
@@ -456,15 +466,19 @@ def split_messages(
         elif isinstance(c, list):
             prompt = "".join(p.get("text", "") for p in c if p.get("type") == "text")
 
+        prompt = _augment_prompt_with_attachments(prompt, last.get("attachments"))
+
     history: list[ModelMessage] = []
     for m in msgs[:-1]:
         role = m.get("role")
         content = m.get("content")
+        attachments = m.get("attachments")
 
         if role == "user":
             text = content if isinstance(content, str) else "".join(
                 p.get("text", "") for p in (content or []) if p.get("type") == "text"
             )
+            text = _augment_prompt_with_attachments(text, attachments)
             if text:
                 history.append(ModelRequest(parts=[UserPromptPart(content=text)]))
             continue
@@ -500,3 +514,58 @@ def split_messages(
                 history.append(ModelRequest(parts=list(tool_returns)))
 
     return prompt, history
+
+
+def _augment_prompt_with_attachments(
+    text: str,
+    attachments: Any,
+    inline_char_limit: int = 40_000,
+) -> str:
+    if not isinstance(attachments, list) or not attachments:
+        return text
+
+    extras: list[str] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        name = str(attachment.get("name") or "attachment")
+        path = str(attachment.get("path") or "")
+        content_type = str(attachment.get("contentType") or "application/octet-stream")
+        content = attachment.get("content")
+
+        inline_text = ""
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    inline_text += str(part.get("text", ""))
+
+                if part.get("type") == "file" and part.get("data") and not inline_text:
+                    stored_path = str(part.get("data"))
+                    chunks = db.get_chunks_for_path(stored_path)
+                    if chunks:
+                        inline_text = "\n\n".join(chunk["content"] for chunk in chunks)
+
+        if inline_text and len(inline_text) <= inline_char_limit:
+            extras.append(
+                f"[Attachment: {name}]\n"
+                f"Path: {path or '(unspecified)'}\n"
+                f"Content-Type: {content_type}\n"
+                f"Inline text:\n{inline_text.strip()}"
+            )
+            continue
+
+        extras.append(
+            f"[Attachment: {name}]\n"
+            f"Path: {path or '(unspecified)'}\n"
+            f"Content-Type: {content_type}\n"
+            "Note: This attachment is not inlined. Use semantic search or workspace tools to inspect it."
+        )
+
+    if not extras:
+        return text
+    attachment_block = "\n\n".join(extras)
+    if text.strip():
+        return f"{text}\n\nAttached context:\n{attachment_block}"
+    return f"Attached context:\n{attachment_block}"

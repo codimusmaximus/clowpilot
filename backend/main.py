@@ -69,6 +69,7 @@ class AppMessage(BaseModel):
     parts: list[dict[str, Any]]
     createdAt: int
     parentId: str | None = None
+    attachments: list[dict[str, Any]] | None = None
 
 
 class AttachmentUploadResponse(BaseModel):

@@ -498,6 +498,55 @@ def get_attachment(attachment_id: str) -> dict[str, Any] | None:
     }
 
 
+def get_attachment_by_path(path: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+             SELECT id, conversation_id, path, name, content_type, kind, bytes,
+                 created_at, updated_at
+            FROM attachments
+            WHERE path = ?
+            """,
+            (path,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "conversationId": row["conversation_id"],
+        "path": row["path"],
+        "name": row["name"],
+        "contentType": row["content_type"],
+        "kind": row["kind"],
+        "bytes": row["bytes"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def get_chunks_for_path(path: str, limit: int = 200) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT file_path, chunk_index, content, metadata
+            FROM chunks
+            WHERE file_path = ?
+            ORDER BY chunk_index
+            LIMIT ?
+            """,
+            (path, limit),
+        ).fetchall()
+    return [
+        {
+            "file_path": row["file_path"],
+            "chunk_index": row["chunk_index"],
+            "content": row["content"],
+            "metadata": json.loads(row["metadata"]),
+        }
+        for row in rows
+    ]
+
+
 def list_attachments(conversation_id: str | None = None) -> list[dict[str, Any]]:
     sql = (
         "SELECT id, conversation_id, path, name, content_type, kind, bytes, created_at, updated_at "
