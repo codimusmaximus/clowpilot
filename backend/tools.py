@@ -15,6 +15,7 @@ import db
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "./workspace")).resolve()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
+WORKSPACE_NAME = WORKSPACE.name
 
 
 # ---------- path helpers ----------
@@ -28,6 +29,24 @@ def _safe_path(rel: str) -> Path:
     return p
 
 
+def remap_into_workspace(path: str | Path) -> Path:
+    """Map equivalent absolute host paths back into the configured workspace root."""
+    candidate = Path(path).expanduser().resolve()
+    if candidate == WORKSPACE or WORKSPACE in candidate.parents:
+        return candidate
+
+    parts = candidate.parts
+    if WORKSPACE_NAME not in parts:
+        raise ValueError(f"path '{candidate}' escapes workspace")
+
+    anchor = parts.index(WORKSPACE_NAME)
+    relative_parts = parts[anchor + 1 :]
+    remapped = (WORKSPACE / Path(*relative_parts)).resolve()
+    if remapped != WORKSPACE and WORKSPACE not in remapped.parents:
+        raise ValueError(f"path '{candidate}' escapes workspace")
+    return remapped
+
+
 def _ext_kind(path: Path) -> str:
     e = path.suffix.lstrip(".").lower()
     return {
@@ -38,6 +57,8 @@ def _ext_kind(path: Path) -> str:
         "css": "css", "html": "html", "sh": "bash",
         "txt": "text", "csv": "csv", "sql": "sql",
         "go": "go", "rs": "rust",
+        "png": "image", "jpg": "image", "jpeg": "image",
+        "gif": "image", "webp": "image", "svg": "image",
     }.get(e, "text")
 
 
@@ -203,7 +224,10 @@ def create_folder(path: str) -> dict[str, Any]:
 
 
 def read_file(path: str) -> dict[str, Any]:
-    rel = str(_safe_path(path).relative_to(WORKSPACE))
+    p = _safe_path(path)
+    if p.suffix.lower() in IMAGE_EXTS:
+        return {"error": f"'{path}' is an image — use display_image to show it"}
+    rel = str(p.relative_to(WORKSPACE))
     file = db.get_file(rel)
     if file is not None:
         return file
@@ -327,6 +351,20 @@ def display_file(path: str) -> dict[str, Any]:
     return res
 
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
+
+def display_image(path: str) -> dict[str, Any]:
+    """Display an image from the workspace in the workspace panel and chat."""
+    p = _safe_path(path)
+    if not p.exists() or not p.is_file():
+        return {"error": f"file not found: {path}"}
+    if p.suffix.lower() not in IMAGE_EXTS:
+        return {"error": f"not an image: {path}"}
+    rel = str(p.relative_to(WORKSPACE))
+    return {"path": rel, "display": "image"}
+
+
 Anchor = Literal["start", "end"]
 
 
@@ -376,6 +414,7 @@ TOOLS: dict[str, Any] = {
     "move_path": move_path,
     "delete_file": delete_file,
     "display_file": display_file,
+    "display_image": display_image,
     "highlight": highlight,
     "snippet": snippet,
     "search": search,
@@ -517,6 +556,26 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "display_image",
+        "description": (
+            "Display an image file from the workspace in the workspace panel. "
+            "Call this after an image (png, jpg, svg, gif, webp) has been saved "
+            "to the workspace so the user can see it. "
+            "Also reference the image inline in your chat reply as "
+            "![description](relative/path.png) so it appears in the chat too."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative path to the image file.",
+                },
+            },
             "required": ["path"],
         },
     },

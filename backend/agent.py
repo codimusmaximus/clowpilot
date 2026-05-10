@@ -123,9 +123,63 @@ PROVIDERS: list[dict] = [
     },
     # ── OpenAI ───────────────────────────────────────────────────────────────
     {
-        "id": "openai",
-        "name": "GPT",
-        "model": os.environ.get("OPENAI_MODEL", "openai:gpt-5.2"),
+        "id": "gpt-5.4",
+        "name": "GPT-5.4",
+        "model": os.environ.get("OPENAI_MODEL", "openai:gpt-5.4"),
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
+        "model": "openai:gpt-5.4-mini",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.4-nano",
+        "name": "GPT-5.4 Nano",
+        "model": "openai:gpt-5.4-nano",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.3-chat-latest",
+        "name": "GPT-5.3 Chat Latest",
+        "model": "openai:gpt-5.3-chat-latest",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.2",
+        "name": "GPT-5.2",
+        "model": "openai:gpt-5.2",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.2-pro",
+        "name": "GPT-5.2 Pro",
+        "model": "openai:gpt-5.2-pro",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.1",
+        "name": "GPT-5.1",
+        "model": "openai:gpt-5.1",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5.1-mini",
+        "name": "GPT-5.1 Mini",
+        "model": "openai:gpt-5.1-mini",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-5-chat-latest",
+        "name": "GPT-5 Chat Latest",
+        "model": "openai:gpt-5-chat-latest",
+        "env_keys": ["OPENAI_API_KEY"],
+    },
+    {
+        "id": "gpt-4.1",
+        "name": "GPT-4.1",
+        "model": "openai:gpt-4.1",
         "env_keys": ["OPENAI_API_KEY"],
     },
 ]
@@ -151,7 +205,7 @@ def _resolve_initial_model() -> str:
     for m in available:
         if "flash" in m["model"]:
             return m["model"]
-    return available[0]["model"] if available else "openai:gpt-5.2"
+    return available[0]["model"] if available else "openai:gpt-5.4"
 
 
 # Module-level active model — mutated by set_active_model() on auto-fallback
@@ -194,6 +248,25 @@ Working principles:
   workspace state.
 - Keep chat replies brief and grounded in the artefacts you show.
 - The workspace is where you show; chat is where you narrate.
+
+Images — only two valid forms:
+1. Workspace file:  ![description](relative/path.png)
+    Use a workspace-root-relative path exactly as it appears in the workspace tree
+    (e.g. report/transactions_plot.png, outputs/chart.png).
+    Do not use a path relative to the current markdown file unless it is also
+    workspace-root-relative.
+   Never use a full URL, never use an <img> tag, never add /api/... prefixes.
+   Also call display_image(path) so the image opens as a tab in the workspace panel.
+2. External URL:    ![description](https://example.com/image.png)
+   Only for images that already exist on the internet.
+
+Snippets:
+- Use snippet(format="markdown") for text, tables, prose, and static images.
+- In markdown snippets, image and file links must use workspace-root-relative
+    paths, not paths relative to the snippet or current document.
+- Use snippet(format="html") for anything that requires JavaScript — charts,
+  interactive widgets, animations. The HTML runs inside an iframe where scripts
+  execute normally. Never put <script> tags in a markdown snippet.
 """
 
 

@@ -4,21 +4,36 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from plugins.base import PluginSpec, ToolSpec
+import tools
 
 CONTAINER_NAME = os.environ.get("PLUGIN_CONTAINER_NAME", "copilot-workspace-container")
-WORKSPACE_VOLUME = os.environ.get("PLUGIN_CONTAINER_VOLUME", "copilot-workspace-data")
 IMAGE = os.environ.get("PLUGIN_CONTAINER_IMAGE", "python:3.12-slim")
+CONTAINER_WORKSPACE = "/workspace"
+HOST_WORKSPACE = str(tools.WORKSPACE)
 
 INSTRUCTIONS = f"""Container plugin:
 - Execute commands and manage files in a persistent Docker container ({CONTAINER_NAME}).
-- The container has a persistent volume mounted at `/workspace`.
+- The container bind-mounts the current app workspace at `{CONTAINER_WORKSPACE}`.
 - Use `run_command` to execute shell commands.
 - Use `read_container_file` and `write_container_file` for file operations inside the container.
-- All paths are relative to `/workspace` unless absolute.
+- All paths are relative to `{CONTAINER_WORKSPACE}` unless absolute.
 """
+
+
+def _container_workspace_path(path: str) -> str:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        try:
+            remapped = tools.remap_into_workspace(candidate)
+        except ValueError:
+            return str(candidate)
+        rel = remapped.relative_to(tools.WORKSPACE)
+        return str(Path(CONTAINER_WORKSPACE) / rel)
+    return str(Path(CONTAINER_WORKSPACE) / path.lstrip("/"))
 
 def _ensure_container():
     """Ensure the container is running."""
@@ -35,8 +50,8 @@ def _ensure_container():
             subprocess.run([
                 "docker", "run", "-d",
                 "--name", CONTAINER_NAME,
-                "-v", f"{WORKSPACE_VOLUME}:/workspace",
-                "-w", "/workspace",
+                "-v", f"{HOST_WORKSPACE}:{CONTAINER_WORKSPACE}",
+                "-w", CONTAINER_WORKSPACE,
                 IMAGE,
                 "tail", "-f", "/dev/null"
             ], check=True)
@@ -83,15 +98,16 @@ def read_container_file(path: str) -> dict[str, Any]:
     if err: return err
     
     try:
+        target = _container_workspace_path(path)
         result = subprocess.run(
-            ["docker", "exec", CONTAINER_NAME, "cat", path],
+            ["docker", "exec", CONTAINER_NAME, "cat", target],
             capture_output=True,
             text=True,
             check=False
         )
         if result.returncode != 0:
             return {"error": f"Failed to read file: {result.stderr}"}
-        return {"content": result.stdout, "path": path}
+        return {"content": result.stdout, "path": target}
     except Exception as e:
         return {"error": f"Failed to read file: {e}"}
 
@@ -101,10 +117,19 @@ def write_container_file(path: str, content: str) -> dict[str, Any]:
     if err: return err
     
     try:
+        target = _container_workspace_path(path)
         # Use a temporary file to pipe content to docker cp or use sh -c 'cat > path'
         # Sh -c 'cat > path' is simpler for text
         process = subprocess.Popen(
-            ["docker", "exec", "-i", CONTAINER_NAME, "sh", "-c", f"cat > {path}"],
+            [
+                "docker",
+                "exec",
+                "-i",
+                CONTAINER_NAME,
+                "sh",
+                "-c",
+                f"mkdir -p {sh_quote(str(Path(target).parent))} && cat > {sh_quote(target)}",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -113,9 +138,13 @@ def write_container_file(path: str, content: str) -> dict[str, Any]:
         stdout, stderr = process.communicate(input=content)
         if process.returncode != 0:
             return {"error": f"Failed to write file: {stderr}"}
-        return {"path": path, "status": "success"}
+        return {"path": target, "status": "success"}
     except Exception as e:
         return {"error": f"Failed to write file: {e}"}
+
+
+def sh_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 def get_plugin() -> PluginSpec:
     return PluginSpec(

@@ -3,10 +3,11 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import rehypeRaw from "rehype-raw";
 import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspace-store";
 import { useUIStore } from "@/lib/ui-store";
-import { fetchFile } from "@/lib/api";
+import { fetchFile, workspaceImageUrl } from "@/lib/api";
 
 /* ─── [[wiki link]] remark plugin ───────────────────────────────────────── */
 
@@ -109,6 +110,32 @@ export function WorkspaceAnchor({
   );
 }
 
+/* ─── Workspace image ────────────────────────────────────────────────────── */
+
+export function WorkspaceImage({ src, alt }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const resolved = typeof src === "string" && isWorkspaceImageSrc(src)
+    ? workspaceImageUrl(normalizeWorkspaceImagePath(src))
+    : src;
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={resolved} alt={alt ?? ""} className="max-w-full rounded" />;
+}
+
+function isWorkspaceImageSrc(src: string) {
+  return !/^(https?:|data:|blob:)/i.test(src);
+}
+
+function normalizeWorkspaceImagePath(src: string) {
+  if (src.startsWith("file://")) {
+    try {
+      return decodeURIComponent(new URL(src).pathname);
+    } catch {
+      return src.replace(/^file:\/\//, "");
+    }
+  }
+  if (src.startsWith("/workspace/")) return src;
+  return src.replace(/^\/+/, "");
+}
+
 /* ─── Markdown renderer ──────────────────────────────────────────────────── */
 
 export function Markdown({
@@ -122,8 +149,8 @@ export function Markdown({
     <div className={cn("prose-chat", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkWikiLinks]}
-        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-        components={{ a: WorkspaceAnchor }}
+        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }], rehypeRaw]}
+        components={{ a: WorkspaceAnchor, img: WorkspaceImage }}
       >
         {children}
       </ReactMarkdown>
