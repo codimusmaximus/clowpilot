@@ -6,10 +6,26 @@ import {
   ExportedMessageRepository,
   SimpleTextAttachmentAdapter,
   useExternalStoreRuntime,
+  type PendingAttachment,
+  type ThreadMessage,
 } from "@assistant-ui/react";
 import { uploadAttachment, uploadedAttachmentToRecord } from "./api";
 import { useChatStore } from "./chat-store";
 import type { AppMessage, AttachmentRecord } from "./types";
+
+type ReadonlyJsonValue =
+  | null
+  | string
+  | number
+  | boolean
+  | readonly ReadonlyJsonValue[]
+  | { readonly [key: string]: ReadonlyJsonValue };
+
+type ReadonlyJsonObject = { readonly [key: string]: ReadonlyJsonValue };
+
+const asReadonlyJsonObject = (
+  value: Record<string, unknown> | undefined,
+): ReadonlyJsonObject => (value ?? {}) as ReadonlyJsonObject;
 
 function normalizeAttachments(
   attachments: AppMessage["attachments"],
@@ -35,7 +51,7 @@ function toThreadMessageLike(m: AppMessage) {
       type: "tool-call" as const,
       toolCallId: p.toolCallId,
       toolName: p.toolName,
-      args: p.args ?? {},
+      args: asReadonlyJsonObject(p.args),
       argsText: p.argsText ?? "",
       result: p.result,
       isError: p.status === "error",
@@ -53,7 +69,7 @@ function toThreadMessageLike(m: AppMessage) {
 class WorkspaceAttachmentAdapter extends SimpleTextAttachmentAdapter {
   override accept = "image/*,text/*,application/pdf,.md,.txt,.csv,.json,.py,.ts,.tsx,.js,.jsx,.html,.css,.sql,.yaml,.yml";
 
-  override async send(attachment: { id: string; name: string; file: File }) {
+  override async send(attachment: PendingAttachment): Promise<AttachmentRecord> {
     const conversationId = useChatStore.getState().activeConversationId;
     const uploaded = await uploadAttachment(attachment.file, conversationId);
     return uploadedAttachmentToRecord(uploaded);
@@ -101,7 +117,7 @@ export function CopilotRuntimeProvider({
   // calls setMessages with ThreadMessage[] (not AppMessage[]), so we can extract IDs directly.
   // Passing convertMessage causes updateMessages to call flatMap(getExternalStoreMessages)
   // which returns [] for repo-sourced messages, breaking branch navigation.
-  const runtime = useExternalStoreRuntime({
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
     isRunning,
     adapters: { attachments: new WorkspaceAttachmentAdapter() },
     messageRepository,

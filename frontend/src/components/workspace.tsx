@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState } from "react";
 import { X, FileText, Sparkles, PanelRight, ChevronRight, Save } from "lucide-react";
 import { useUIStore } from "@/lib/ui-store";
 import { cn } from "@/lib/cn";
@@ -162,24 +162,28 @@ function FileViewer({
     canRender ? "rendered" : "raw"
   );
   const [draft, setDraft] = useState(tab.content);
+  const [savedContent, setSavedContent] = useState(tab.content);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const updateFileContent = useWorkspace((s) => s.updateFileContent);
-  const savedRef = useRef(tab.content);
 
   // Sync draft when the tab content changes externally (e.g. assistant edits)
   useEffect(() => {
-    setDraft(tab.content);
-    savedRef.current = tab.content;
+    const id = window.setTimeout(() => {
+      setDraft(tab.content);
+      setSavedContent(tab.content);
+      setSaveState("idle");
+    }, 0);
+    return () => window.clearTimeout(id);
   }, [tab.content]);
 
-  const dirty = draft !== savedRef.current;
+  const dirty = draft !== savedContent;
 
   const handleSave = useCallback(async (content: string) => {
-    if (content === savedRef.current) return;
+    if (content === savedContent) return;
     setSaveState("saving");
     try {
       await saveFile(tab.path, content);
-      savedRef.current = content;
+      setSavedContent(content);
       updateFileContent(tab.path, content);
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 1500);
@@ -187,14 +191,14 @@ function FileViewer({
       console.error("save failed", err);
       setSaveState("idle");
     }
-  }, [tab.path, updateFileContent]);
+  }, [savedContent, tab.path, updateFileContent]);
 
   // Auto-save 1.5 s after last keystroke
   useEffect(() => {
-    if (draft === savedRef.current) return;
+    if (draft === savedContent) return;
     const id = setTimeout(() => handleSave(draft), 1500);
     return () => clearTimeout(id);
-  }, [draft, handleSave]);
+  }, [draft, savedContent, handleSave]);
 
   // Cmd+S / Ctrl+S — immediate save
   useEffect(() => {

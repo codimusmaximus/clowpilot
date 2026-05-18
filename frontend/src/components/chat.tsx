@@ -146,7 +146,9 @@ function MessageAttachment() {
   return (
     <AttachmentPrimitive.Root className="mb-2 flex items-center gap-2 rounded border border-rule bg-ground-2/40 px-3 py-2 text-xs">
       <Paperclip className="size-3.5 text-bone-muted" strokeWidth={1.6} />
-      <AttachmentPrimitive.Name className="truncate font-mono text-[11px] text-bone" />
+      <span className="truncate font-mono text-[11px] text-bone">
+        <AttachmentPrimitive.Name />
+      </span>
     </AttachmentPrimitive.Root>
   );
 }
@@ -155,7 +157,9 @@ function ComposerAttachment() {
   return (
     <AttachmentPrimitive.Root className="flex items-center gap-2 rounded border border-rule bg-ground px-2 py-1 text-[11px]">
       <Paperclip className="size-3 text-bone-muted" strokeWidth={1.6} />
-      <AttachmentPrimitive.Name className="max-w-48 truncate font-mono text-bone" />
+      <span className="max-w-48 truncate font-mono text-bone">
+        <AttachmentPrimitive.Name />
+      </span>
       <AttachmentPrimitive.Remove asChild>
         <button
           type="button"
@@ -216,6 +220,25 @@ function AssistantMessage() {
         </div>
       </div>
     </MessagePrimitive.Root>
+  );
+}
+
+function ThinkingIndicator() {
+  const isRunning = useChatStore((s) => s.isRunning);
+  if (!isRunning) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mx-auto flex w-full max-w-[44rem] items-center gap-3 px-6 py-2 text-bone-dim"
+    >
+      <span className="smallcaps shimmer-text">thinking</span>
+      <span className="flex gap-1" aria-hidden="true">
+        <span className="size-1 rounded-full bg-ember ember-pulse" />
+        <span className="size-1 rounded-full bg-ember ember-pulse" style={{ animationDelay: "0.2s" }} />
+        <span className="size-1 rounded-full bg-ember ember-pulse" style={{ animationDelay: "0.4s" }} />
+      </span>
+    </div>
   );
 }
 
@@ -365,7 +388,6 @@ function Composer({ plugins }: { plugins: PluginStatus[] }) {
 }
 
 export function Chat() {
-  const isRunning = useChatStore((s) => s.isRunning);
   const plugins = useChatStore((s) => s.plugins);
   const rightOpen = useUIStore((s) => s.rightOpen);
   const toggleRight = useUIStore((s) => s.toggleRight);
@@ -399,6 +421,7 @@ export function Chat() {
         <ThreadPrimitive.Messages
           components={{ UserMessage, AssistantMessage, EditComposer }}
         />
+        <ThinkingIndicator />
         <div className="h-6" />
       </ThreadPrimitive.Viewport>
 

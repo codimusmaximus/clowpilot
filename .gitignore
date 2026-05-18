@@ -9,3 +9,8 @@
 
 # Workspace content (user data, not source code)
 backend/workspace/
+/workspace/
+
+# macOS
+.DS_Store
+**/.DS_Store

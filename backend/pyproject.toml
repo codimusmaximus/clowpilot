@@ -8,11 +8,12 @@ dependencies = [
     "ddgs>=9.14.2",
     "fastapi>=0.136.1",
     "firecrawl-py>=4.25.2",
-    "pydantic-ai-slim[openai,google,mistral]>=1.90.0",
+    "httpx>=0.28",
+    "pydantic-ai-slim[openai,google,mistral,anthropic]>=1.90.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.27",
-    "sentence-transformers>=5.4.1",
     "sqlite-vec>=0.1.9",
     "sse-starlette>=3.4.1",
     "uvicorn[standard]>=0.46.0",
 ]
+

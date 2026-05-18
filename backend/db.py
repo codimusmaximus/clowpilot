@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
 import sqlite_vec
 
 
@@ -186,7 +187,8 @@ def init() -> None:
                 (conversation_id,),
             )
         conn.execute("DELETE FROM messages WHERE conversation_id IS NULL")
-    _backfill_chunks()
+    if os.environ.get("STARTUP_INDEX_BACKFILL") == "1":
+        _backfill_chunks()
 
 
 def _backfill_chunks() -> None:
@@ -204,20 +206,20 @@ def _backfill_chunks() -> None:
         index_file(row["path"], row["content"], row["kind"])
 
 
-_EMBED_MODEL = None
 _MAX_INDEX_BYTES = 200_000
-
-
-def _get_embed_model():
-    global _EMBED_MODEL
-    if _EMBED_MODEL is None:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
-        _EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-    return _EMBED_MODEL
+_EMBEDDINGS_URL = os.environ.get("EMBEDDINGS_URL", "http://localhost:8001")
 
 
 def _embed(texts: list[str]) -> list[list[float]]:
-    return _get_embed_model().encode(texts, normalize_embeddings=True).tolist()
+    if not texts:
+        return []
+    resp = httpx.post(
+        f"{_EMBEDDINGS_URL}/embed",
+        json={"texts": texts},
+        timeout=60.0,
+    )
+    resp.raise_for_status()
+    return resp.json()["vectors"]
 
 
 def _serialize_vec(v: list[float]) -> bytes:

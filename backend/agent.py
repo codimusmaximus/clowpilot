@@ -1,13 +1,14 @@
 """Pydantic AI streaming agent loop.
 
-Supports OpenAI, Google Gemini, and DeepSeek backends.
+Supports OpenAI, Google Gemini, Mistral, DeepSeek, and Anthropic backends.
 
 Model selection (in priority order):
   1. LLM_MODEL env var — explicit override, any provider string
-  2. Auto: first Flash model available (GOOGLE_API_KEY → Gemini 3 Flash,
-     DEEPSEEK_API_KEY → DeepSeek Chat, OPENAI_API_KEY → GPT)
-  Pro models are listed in the selector but default is Flash to avoid
-  free-tier quota=0 limits.
+  2. Auto: first Flash/Haiku model available (GOOGLE_API_KEY → Gemini 3 Flash,
+     ANTHROPIC_API_KEY → Claude Haiku, DEEPSEEK_API_KEY → DeepSeek Chat,
+     OPENAI_API_KEY → GPT)
+  Pro/Opus models are listed in the selector but default is Flash/Haiku to
+  avoid free-tier quota=0 limits.
 
 Auto-fallback: if the active model hits a quota / rate-limit error before
 emitting any events, the agent transparently retries with the next available
@@ -109,6 +110,25 @@ PROVIDERS: list[dict] = [
         "model": "mistral:codestral-latest",
         "env_keys": ["MISTRAL_API_KEY"],
     },
+    # ── Anthropic ────────────────────────────────────────────────────────────
+    {
+        "id": "claude-opus-4-7",
+        "name": "Claude Opus 4.7",
+        "model": "anthropic:claude-opus-4-7",
+        "env_keys": ["ANTHROPIC_API_KEY"],
+    },
+    {
+        "id": "claude-sonnet-4-6",
+        "name": "Claude Sonnet 4.6",
+        "model": "anthropic:claude-sonnet-4-6",
+        "env_keys": ["ANTHROPIC_API_KEY"],
+    },
+    {
+        "id": "claude-haiku-4-5",
+        "name": "Claude Haiku 4.5",
+        "model": "anthropic:claude-haiku-4-5-20251001",
+        "env_keys": ["ANTHROPIC_API_KEY"],
+    },
     # ── DeepSeek ─────────────────────────────────────────────────────────────
     {
         "id": "deepseek-chat",
@@ -202,9 +222,9 @@ def _resolve_initial_model() -> str:
     if explicit:
         return explicit
     available = list_available_models()
-    # Prefer a Flash model as default (Pro models may hit free-tier quota=0)
+    # Prefer a cheap/fast default (Flash/Haiku) — Pro/Opus may hit quota=0
     for m in available:
-        if "flash" in m["model"]:
+        if "flash" in m["model"] or "haiku" in m["model"]:
             return m["model"]
     return available[0]["model"] if available else "openai:gpt-5.4"
 

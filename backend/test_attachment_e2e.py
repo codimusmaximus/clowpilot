@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""End-to-end test for attachment persistence."""
-
-import json
+import os
 import sys
 import tempfile
-import os
 from pathlib import Path
+
+DB_FILE = tempfile.NamedTemporaryFile(prefix="copilot-attachment-e2e-", suffix=".sqlite3", delete=False)
+DB_FILE.close()
+os.environ.setdefault("SQLITE_DB_PATH", DB_FILE.name)
 
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -21,8 +22,8 @@ def test_attachment_persistence():
         os.environ['WORKSPACE_DIR'] = tmpdir
         
         # Create a test conversation
-        conv_id = "test-conv-123"
-        db.ensure_conversation(conv_id)
+        conversation = db.create_conversation("Attachment persistence")
+        conv_id = conversation["id"]
         
         # Create test messages with attachments
         messages = [
@@ -36,7 +37,7 @@ def test_attachment_persistence():
                     {
                         "id": "att1",
                         "name": "test.txt",
-                        "path": "attachments/test-conv-123/test.txt",
+                        "path": f"attachments/{conv_id}/test.txt",
                         "contentType": "text/plain",
                         "type": "document"
                     }
@@ -76,7 +77,6 @@ def test_attachment_persistence():
         assert fetched_attachments[0]["name"] == "test.txt", f"Expected test.txt, got {fetched_attachments[0]['name']}"
         
         print("\n✅ All assertions passed! Attachments persisted correctly.")
-        return True
 
 if __name__ == "__main__":
     try:

@@ -1,4 +1,10 @@
 services:
+  embeddings:
+    build: ./embeddings
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
   backend:
     build: ./backend
     ports:
@@ -6,18 +12,14 @@ services:
     volumes:
       - ./workspace:/workspace
       - backend-data:/data
+    env_file:
+      - ./backend/.env
     environment:
       - WORKSPACE_DIR=/workspace
       - SQLITE_DB_PATH=/data/copilot.sqlite3
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_MODEL=${OPENAI_MODEL:-openai:gpt-4.1}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - GOOGLE_MODEL=${GOOGLE_MODEL:-google-gla:gemini-2.5-flash}
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek:deepseek-chat}
-      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
-      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
-      - LLM_MODEL=${LLM_MODEL:-}
+      - EMBEDDINGS_URL=http://embeddings:8001
+    depends_on:
+      - embeddings
     restart: unless-stopped
 
   frontend:

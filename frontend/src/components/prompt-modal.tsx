@@ -8,6 +8,13 @@ import { useUIStore } from "@/lib/ui-store";
 
 export function PromptModal() {
   const open = useUIStore((s) => s.promptModalOpen);
+
+  if (!open) return null;
+
+  return <PromptModalContent />;
+}
+
+function PromptModalContent() {
   const closePromptModal = useUIStore((s) => s.closePromptModal);
 
   const systemPrompts = useChatStore((s) => s.systemPrompts);
@@ -27,24 +34,12 @@ export function PromptModal() {
   const selectedPrompt = systemPrompts.find((p) => p.id === selectedId) ?? activePrompt;
 
   useEffect(() => {
-    if (open) {
-      setSelectedId(activeSystemPromptId);
-      setEditing(false);
-      setCreating(false);
-      setDraftName(activePrompt?.name ?? "");
-      setDraftContent(activePrompt?.content ?? "");
-    }
-  }, [open, activeSystemPromptId, activePrompt]);
-
-  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closePromptModal();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [closePromptModal]);
-
-  if (!open) return null;
 
   const selectPrompt = (id: string) => {
     setSelectedId(id);

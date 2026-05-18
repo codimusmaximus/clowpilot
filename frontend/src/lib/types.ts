@@ -1,3 +1,5 @@
+import type { CompleteAttachment, FileMessagePart } from "@assistant-ui/react";
+
 export type ToolName =
   | "list_tree"
   | "create_folder"
@@ -26,21 +28,11 @@ export type ToolCallPart = {
 
 export type TextPart = { type: "text"; text: string };
 
-export type AttachmentContentPart = {
-  type: "file";
-  data: string;
-  mimeType: string;
-  filename?: string;
-};
+export type AttachmentContentPart = FileMessagePart;
 
-export type AttachmentRecord = {
-  id: string;
-  type: "file" | "document" | "image";
-  name: string;
-  contentType?: string;
+export type AttachmentRecord = Omit<CompleteAttachment, "content"> & {
   path?: string;
   content: AttachmentContentPart[];
-  status?: { type: "complete" };
 };
 
 export type AppMessage = {
