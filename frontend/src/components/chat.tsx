@@ -20,6 +20,7 @@ import {
   Pencil,
   PanelRight,
   Paperclip,
+  Settings,
   Square,
   Sparkles,
   X,
@@ -391,6 +392,7 @@ export function Chat() {
   const plugins = useChatStore((s) => s.plugins);
   const rightOpen = useUIStore((s) => s.rightOpen);
   const toggleRight = useUIStore((s) => s.toggleRight);
+  const openSessionInfo = useUIStore((s) => s.openSessionInfo);
 
   return (
     <ThreadPrimitive.Root className="flex h-full w-full min-h-0 flex-col bg-ground">
@@ -398,6 +400,15 @@ export function Chat() {
         <span className="size-1.5 rounded-full bg-ember" />
         <span className="font-display text-base italic text-bone">studio</span>
         <span className="flex-1" />
+        <button
+          type="button"
+          onClick={openSessionInfo}
+          title="session info — model, prompts, plugins"
+          aria-label="session info"
+          className="rounded p-1.5 text-bone-muted transition-colors hover:bg-ground-2 hover:text-bone"
+        >
+          <Settings className="size-4" strokeWidth={1.6} />
+        </button>
         <button
           type="button"
           onClick={toggleRight}

@@ -3,6 +3,8 @@
 import { create } from "zustand";
 import {
   CHAT_URL,
+  addProjectKnowledge as addProjectKnowledgeApi,
+  updateProjectKnowledgeSettings as updateProjectKnowledgeSettingsApi,
   createConversation as createConversationApi,
   createProject as createProjectApi,
   createSystemPrompt as createSystemPromptApi,
@@ -12,7 +14,11 @@ import {
   fetchFile,
   fetchMessages,
   fetchModels,
+  fetchProjectKnowledge,
   fetchProjects,
+  removeProjectKnowledge as removeProjectKnowledgeApi,
+  type ProjectKnowledgeLink,
+  type ProjectKnowledgeRefType,
   fetchSystemPrompts,
   workspaceImageUrl,
   saveMessages,
@@ -38,6 +44,8 @@ type ChatState = {
   headId: string | null;
   conversations: Conversation[];
   activeConversationId: string | null;
+  activeProjectId: string | null;
+  selectProject: (projectId: string | null) => void;
   systemPrompts: SystemPrompt[];
   activeSystemPromptId: string | null;
   isRunning: boolean;
@@ -59,6 +67,11 @@ type ChatState = {
   toggleTool: (pluginId: string, toolName: string, enabled: boolean) => Promise<void>;
   createProject: (name: string, systemPromptId?: string | null) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
+  projectKnowledge: Record<string, ProjectKnowledgeLink[]>;
+  loadProjectKnowledge: (projectId: string) => Promise<void>;
+  addProjectKnowledge: (projectId: string, refType: ProjectKnowledgeRefType, refPath: string) => Promise<void>;
+  removeProjectKnowledge: (projectId: string, linkId: string) => Promise<void>;
+  setProjectKnowledgeSettings: (projectId: string, mode: "full" | "preview" | "metadata", previewTokens: number) => Promise<void>;
   send: (text: string, parentId: string | null, attachments?: AttachmentRecord[]) => Promise<void>;
   editMessage: (sourceId: string | null, text: string, parentId: string | null, attachments?: AttachmentRecord[]) => Promise<void>;
   setHeadId: (headId: string | null) => void;
@@ -231,11 +244,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   headId: null,
   conversations: [],
   activeConversationId: null,
+  activeProjectId: null,
+  selectProject: (projectId) =>
+    set({ activeProjectId: projectId, activeConversationId: projectId ? null : get().activeConversationId }),
   systemPrompts: [],
   activeSystemPromptId: null,
   isRunning: false,
   plugins: [],
   projects: [],
+  projectKnowledge: {},
   models: [],
   activeModel: null,
 
@@ -280,6 +297,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       conversations: [conversation, ...s.conversations],
       activeConversationId: conversation.id,
+      activeProjectId: null,
       activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
       messages: [],
       headId: null,
@@ -295,6 +313,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       conversations: [conversation, ...s.conversations],
       activeConversationId: conversation.id,
+      activeProjectId: null,
       activeSystemPromptId: conversation.systemPromptId ?? s.activeSystemPromptId,
       messages: [],
       headId: null,
@@ -331,6 +350,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const conversation = get().conversations.find((c) => c.id === id);
     set({
       activeConversationId: id,
+      activeProjectId: null,
       activeSystemPromptId:
         conversation?.systemPromptId ?? get().activeSystemPromptId,
       messages,
@@ -426,11 +446,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteProject: async (id) => {
     await deleteProjectApi(id);
+    set((s) => {
+      const nextKnowledge = { ...s.projectKnowledge };
+      delete nextKnowledge[id];
+      return {
+        projects: s.projects.filter((p) => p.id !== id),
+        conversations: s.conversations.map((c) =>
+          c.projectId === id ? { ...c, projectId: null } : c
+        ),
+        projectKnowledge: nextKnowledge,
+      };
+    });
+  },
+
+  loadProjectKnowledge: async (projectId) => {
+    try {
+      const links = await fetchProjectKnowledge(projectId);
+      set((s) => ({
+        projectKnowledge: { ...s.projectKnowledge, [projectId]: links },
+      }));
+    } catch (err) {
+      console.error("loadProjectKnowledge failed", err);
+    }
+  },
+
+  addProjectKnowledge: async (projectId, refType, refPath) => {
+    const link = await addProjectKnowledgeApi(projectId, refType, refPath);
+    set((s) => {
+      const existing = s.projectKnowledge[projectId] ?? [];
+      if (existing.some((l) => l.id === link.id)) return s;
+      return {
+        projectKnowledge: {
+          ...s.projectKnowledge,
+          [projectId]: [...existing, link],
+        },
+      };
+    });
+  },
+
+  removeProjectKnowledge: async (projectId, linkId) => {
+    await removeProjectKnowledgeApi(projectId, linkId);
     set((s) => ({
-      projects: s.projects.filter((p) => p.id !== id),
-      conversations: s.conversations.map((c) =>
-        c.projectId === id ? { ...c, projectId: null } : c
-      ),
+      projectKnowledge: {
+        ...s.projectKnowledge,
+        [projectId]: (s.projectKnowledge[projectId] ?? []).filter(
+          (l) => l.id !== linkId
+        ),
+      },
+    }));
+  },
+
+  setProjectKnowledgeSettings: async (projectId, mode, previewTokens) => {
+    const updated = await updateProjectKnowledgeSettingsApi(
+      projectId,
+      mode,
+      previewTokens
+    );
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === projectId ? updated : p)),
     }));
   },
 

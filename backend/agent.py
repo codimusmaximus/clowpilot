@@ -300,14 +300,146 @@ Snippets:
 """
 
 
+def compose_system_prompt(
+    base_prompt: str | None = None,
+    conversation_id: str | None = None,
+) -> str:
+    """Public-facing accessor for the same composition used at chat-time.
+
+    Mirrors the call from _stream_model so the UI can show the exact prompt
+    the model will see for the given conversation.
+    """
+    return _compose_system_prompt(
+        base_prompt=base_prompt or BASE_SYSTEM_PROMPT,
+        conversation_id=conversation_id,
+    )
+
+
 def _compose_system_prompt(
     base_prompt: str = BASE_SYSTEM_PROMPT,
     conversation_id: str | None = None,
 ) -> str:
+    parts: list[str] = [base_prompt]
+
+    knowledge_block = _project_knowledge_block(conversation_id)
+    if knowledge_block:
+        parts.append(knowledge_block)
+
     plugin_instructions = plugin_registry.instructions(conversation_id)
-    if not plugin_instructions:
-        return base_prompt
-    return f"{base_prompt}\n\nEnabled plugins:\n\n{plugin_instructions}"
+    if plugin_instructions:
+        parts.append(f"Enabled plugins:\n\n{plugin_instructions}")
+
+    return "\n\n".join(parts)
+
+
+def _project_knowledge_block(conversation_id: str | None) -> str:
+    if not conversation_id:
+        return ""
+    convo = db.get_conversation(conversation_id)
+    project_id = convo.get("projectId") if convo else None
+    if not project_id:
+        return ""
+    expanded = db.expand_project_knowledge(project_id)
+    links = db.list_project_knowledge(project_id)
+    if not links and not expanded["included"]:
+        return ""
+
+    # Per-link summary: count how many of each pinned folder/page made it in.
+    included_by_folder: dict[str, list[dict[str, Any]]] = {}
+    truncated_by_folder: dict[str, list[dict[str, Any]]] = {}
+    for item in expanded["included"]:
+        key = item.get("from_folder")
+        if key:
+            included_by_folder.setdefault(key, []).append(item)
+    for item in expanded["truncated"]:
+        key = item.get("from_folder")
+        if key:
+            truncated_by_folder.setdefault(key, []).append(item)
+    included_pages = {i["ref_path"]: i for i in expanded["included"] if not i.get("from_folder")}
+    truncated_pages = {t["ref_path"]: t for t in expanded["truncated"] if not t.get("from_folder")}
+
+    mode = expanded.get("mode", "full")
+    preview_tokens = expanded.get("preview_tokens", 500)
+
+    parts: list[str] = ["## Project knowledge"]
+    if mode == "metadata":
+        parts.append(
+            f"This project has {len(links)} pinned item{'s' if len(links) != 1 else ''}. "
+            "**Metadata-only mode** — no contents are inlined. The inventory below "
+            "lists paths and sizes; use `page_read` / `page_search` to read anything "
+            "before relying on it."
+        )
+    elif mode == "preview":
+        parts.append(
+            f"This project has {len(links)} pinned item{'s' if len(links) != 1 else ''}. "
+            f"**Preview mode** — the first ~{preview_tokens:,} tokens of each pinned page "
+            f"are inlined below (~{expanded['total_tokens']:,} tokens total, "
+            f"cap: {expanded['max_tokens']:,}). "
+            "If a preview is clipped, use `page_read` to fetch the full page."
+        )
+    else:  # full
+        parts.append(
+            f"This project has {len(links)} pinned item{'s' if len(links) != 1 else ''}. "
+            f"~{expanded['total_tokens']:,} tokens of content are inlined below "
+            f"(cap: {expanded['max_tokens']:,}). "
+            "Treat the inlined contents as authoritative background. "
+            "Anything listed in Inventory but missing from Contents is too large — "
+            "fetch it with `page_read` / `page_search` on demand."
+        )
+
+    parts.append("\n### Inventory")
+    for link in links:
+        rp = link["ref_path"]
+        if link["ref_type"] == "page":
+            if rp in included_pages:
+                t = included_pages[rp]["tokens"]
+                parts.append(f"- page `{rp}` — {t:,} tok, inlined")
+            elif rp in truncated_pages:
+                parts.append(
+                    f"- page `{rp}` — {truncated_pages[rp]['reason']}"
+                )
+            else:
+                parts.append(f"- page `{rp}`")
+        else:  # page_folder
+            inc = included_by_folder.get(rp, [])
+            trc = truncated_by_folder.get(rp, [])
+            total = len(inc) + len(trc)
+            inc_tok = sum(i["tokens"] for i in inc)
+            if total == 0:
+                parts.append(f"- folder `{rp}/` — no pages found")
+            elif not trc:
+                parts.append(
+                    f"- folder `{rp}/` — {len(inc)} page"
+                    f"{'s' if len(inc) != 1 else ''}, {inc_tok:,} tok, all inlined"
+                )
+            else:
+                if mode == "metadata":
+                    parts.append(
+                        f"- folder `{rp}/` — {total} page"
+                        f"{'s' if total != 1 else ''} (metadata-only; use page_read)"
+                    )
+                else:
+                    parts.append(
+                        f"- folder `{rp}/` — {len(inc)} of {total} pages inlined "
+                        f"({inc_tok:,} tok); {len(trc)} omitted (token cap, fetch with page_read)"
+                    )
+
+    if expanded["truncated"]:
+        parts.append("\n_Not inlined (omitted from Contents below):_")
+        for t in expanded["truncated"]:
+            via = f" (from `{t['from_folder']}/`)" if t.get("from_folder") else ""
+            parts.append(
+                f"- `{t['ref_path']}` — {t['reason']}, ~{t['tokens']:,} tok{via}"
+            )
+
+    if expanded["included"]:
+        parts.append("\n### Contents\n")
+        for item in expanded["included"]:
+            tag = " _(preview)_" if item.get("preview_clipped") else ""
+            parts.append(f"\n#### {item['ref_path']}{tag}\n")
+            parts.append(item["content"].rstrip())
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

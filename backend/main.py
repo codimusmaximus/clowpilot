@@ -24,6 +24,7 @@ import tools
 import db
 from agent import (
     BASE_SYSTEM_PROMPT,
+    compose_system_prompt,
     get_active_model,
     list_available_models,
     run,
@@ -111,6 +112,16 @@ class ProjectRequest(BaseModel):
 
 class ConversationProjectRequest(BaseModel):
     projectId: str | None = None
+
+
+class ProjectKnowledgeRequest(BaseModel):
+    refType: str
+    refPath: str
+
+
+class ProjectKnowledgeSettingsRequest(BaseModel):
+    mode: str
+    previewTokens: int = 500
 
 
 class SystemPromptRequest(BaseModel):
@@ -206,6 +217,66 @@ def put_conversation_system_prompt(conversation_id: str, req: ActiveSystemPrompt
     return conversation
 
 
+@app.get("/api/conversations/{conversation_id}/session-info")
+def get_session_info(conversation_id: str):
+    """Inspect the live state the model sees for this conversation.
+
+    Returns the fully composed system prompt (base + project knowledge +
+    plugin instructions), plus the project/knowledge/plugin context that
+    fed into it. Read-only.
+    """
+    convo = db.get_conversation(conversation_id)
+    if convo is None:
+        raise HTTPException(404, f"conversation not found: {conversation_id}")
+
+    custom_prompt = None
+    if convo.get("systemPromptId"):
+        row = db.get_system_prompt(convo["systemPromptId"])
+        if row:
+            custom_prompt = {
+                "id": row["id"],
+                "name": row["name"],
+                "content": row["content"],
+            }
+
+    project = None
+    knowledge = None
+    knowledge_links = None
+    if convo.get("projectId"):
+        project_row = db.get_project(convo["projectId"])
+        if project_row:
+            project = {
+                "id": project_row["id"],
+                "name": project_row["name"],
+                "systemPromptId": project_row.get("systemPromptId"),
+            }
+            knowledge = db.expand_project_knowledge(convo["projectId"])
+            knowledge_links = db.list_project_knowledge(convo["projectId"])
+
+    base_prompt = custom_prompt["content"] if custom_prompt else BASE_SYSTEM_PROMPT
+    composed = compose_system_prompt(
+        base_prompt=base_prompt,
+        conversation_id=conversation_id,
+    )
+
+    return {
+        "conversation": convo,
+        "model": get_active_model(),
+        "basePrompt": {
+            "isCustom": custom_prompt is not None,
+            "name": custom_prompt["name"] if custom_prompt else "(default)",
+            "content": base_prompt,
+        },
+        "project": project,
+        "knowledge": knowledge,
+        "knowledgeLinks": knowledge_links,
+        "plugins": plugin_registry.list_plugin_status(conversation_id),
+        "systemPrompt": composed,
+        "systemPromptBytes": len(composed.encode("utf-8")),
+        "systemPromptTokens": db.estimate_tokens(composed),
+    }
+
+
 @app.get("/api/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: str):
     if not db.conversation_exists(conversation_id):
@@ -297,6 +368,44 @@ def delete_project_endpoint(project_id: str):
         raise HTTPException(404, f"project not found: {project_id}")
     db.delete_project(project_id)
     return {"ok": True}
+
+
+@app.get("/api/projects/{project_id}/knowledge")
+def get_project_knowledge(project_id: str):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project not found: {project_id}")
+    return {"links": db.list_project_knowledge(project_id)}
+
+
+@app.post("/api/projects/{project_id}/knowledge")
+def post_project_knowledge(project_id: str, req: ProjectKnowledgeRequest):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project not found: {project_id}")
+    try:
+        link = db.add_project_knowledge(project_id, req.refType, req.refPath)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"link": link}
+
+
+@app.delete("/api/projects/{project_id}/knowledge/{link_id}")
+def delete_project_knowledge(project_id: str, link_id: str):
+    if not db.remove_project_knowledge(project_id, link_id):
+        raise HTTPException(404, "knowledge link not found")
+    return {"ok": True}
+
+
+@app.put("/api/projects/{project_id}/knowledge-settings")
+def put_project_knowledge_settings(
+    project_id: str, req: ProjectKnowledgeSettingsRequest
+):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project not found: {project_id}")
+    try:
+        project = db.set_project_knowledge_settings(project_id, req.mode, req.previewTokens)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"project": project}
 
 
 # ---------- plugins ----------

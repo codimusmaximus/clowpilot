@@ -53,12 +53,16 @@ export type Conversation = {
   updatedAt: number;
 };
 
+export type KnowledgeMode = "full" | "preview" | "metadata";
+
 export type Project = {
   id: string;
   name: string;
   systemPromptId: string | null;
   createdAt: number;
   updatedAt: number;
+  knowledgeMode: KnowledgeMode;
+  knowledgePreviewTokens: number;
 };
 
 export type SystemPrompt = {

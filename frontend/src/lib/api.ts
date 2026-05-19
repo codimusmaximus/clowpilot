@@ -152,6 +152,111 @@ export async function deleteProject(projectId: string): Promise<void> {
   if (!res.ok) throw new Error(`project delete failed: ${res.status}`);
 }
 
+export type ProjectKnowledgeRefType = "page" | "page_folder";
+
+export interface ProjectKnowledgeLink {
+  id: string;
+  project_id: string;
+  ref_type: ProjectKnowledgeRefType;
+  ref_path: string;
+  created_at: number;
+}
+
+export async function fetchProjectKnowledge(
+  projectId: string
+): Promise<ProjectKnowledgeLink[]> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/knowledge`
+  );
+  if (!res.ok) throw new Error(`knowledge fetch failed: ${res.status}`);
+  const data = (await res.json()) as { links: ProjectKnowledgeLink[] };
+  return data.links;
+}
+
+export async function addProjectKnowledge(
+  projectId: string,
+  refType: ProjectKnowledgeRefType,
+  refPath: string
+): Promise<ProjectKnowledgeLink> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/knowledge`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refType, refPath }),
+    }
+  );
+  if (!res.ok) throw new Error(`knowledge add failed: ${res.status}`);
+  const data = (await res.json()) as { link: ProjectKnowledgeLink };
+  return data.link;
+}
+
+export async function updateProjectKnowledgeSettings(
+  projectId: string,
+  mode: "full" | "preview" | "metadata",
+  previewTokens: number
+): Promise<Project> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/knowledge-settings`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, previewTokens }),
+    }
+  );
+  if (!res.ok) throw new Error(`knowledge settings update failed: ${res.status}`);
+  const data = (await res.json()) as { project: Project };
+  return data.project;
+}
+
+export async function removeProjectKnowledge(
+  projectId: string,
+  linkId: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/knowledge/${encodeURIComponent(linkId)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw new Error(`knowledge remove failed: ${res.status}`);
+}
+
+export interface SessionInfo {
+  conversation: {
+    id: string;
+    title: string;
+    systemPromptId: string | null;
+    projectId: string | null;
+  };
+  model: string;
+  basePrompt: { isCustom: boolean; name: string; content: string };
+  project: { id: string; name: string; systemPromptId: string | null } | null;
+  knowledge:
+    | {
+        included: { ref_type: string; ref_path: string; tokens: number; bytes: number; from_folder?: string; preview_clipped?: boolean }[];
+        truncated: { ref_type: string; ref_path: string; tokens: number; reason: string; from_folder?: string }[];
+        total_tokens: number;
+        max_tokens: number;
+        mode: "full" | "preview" | "metadata";
+        preview_tokens: number;
+      }
+    | null;
+  knowledgeLinks: ProjectKnowledgeLink[] | null;
+  plugins: PluginStatus[];
+  systemPrompt: string;
+  systemPromptBytes: number;
+  systemPromptTokens: number;
+}
+
+export async function fetchSessionInfo(
+  conversationId: string
+): Promise<SessionInfo> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/session-info`
+  );
+  if (!res.ok) throw new Error(`session info fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchMessages(
   conversationId: string
 ): Promise<{ messages: AppMessage[]; headId: string | null }> {

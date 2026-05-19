@@ -16,6 +16,7 @@ import {
   Plus,
   Trash2,
   X,
+  BookMarked,
   Settings2,
   Wrench,
 } from "lucide-react";
@@ -26,6 +27,9 @@ import { useChatStore } from "@/lib/chat-store";
 import { useUIStore, type SidebarView } from "@/lib/ui-store";
 import { fetchPageTree, fetchFileTree, fetchFile, uploadFile } from "@/lib/api";
 import type { FileNode, PluginStatus } from "@/lib/types";
+import type { ProjectKnowledgeLink } from "@/lib/api";
+
+const EMPTY_LINKS: ProjectKnowledgeLink[] = [];
 
 export function Sidebar() {
   const sidebarView = useUIStore((s) => s.sidebarView);
@@ -727,24 +731,69 @@ function ProjectFolder({
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
 
+  const links = useChatStore((s) => s.projectKnowledge[project.id]) ?? EMPTY_LINKS;
+  const activeProjectId = useChatStore((s) => s.activeProjectId);
+  const selectProject = useChatStore((s) => s.selectProject);
+  const loadKnowledge = useChatStore((s) => s.loadProjectKnowledge);
+  const removeKnowledge = useChatStore((s) => s.removeProjectKnowledge);
+  const openPicker = useUIStore((s) => s.openKnowledgePicker);
+
+  const isActive = activeProjectId === project.id;
+
+  useEffect(() => {
+    loadKnowledge(project.id).catch(() => undefined);
+  }, [project.id, loadKnowledge]);
+
   return (
     <li>
       <div
-        className="flex w-full items-center gap-1 rounded px-1 py-1 hover:bg-ground/50"
+        className={cn(
+          "flex w-full items-center gap-1 rounded px-1 py-1 hover:bg-ground/50",
+          isActive && "bg-ember-soft/40"
+        )}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        <button type="button" onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 items-center gap-1.5">
-          <ChevronRight className={cn("size-3 shrink-0 text-bone-muted transition-transform", open && "rotate-90")} strokeWidth={1.6} />
+        <button
+          type="button"
+          aria-label={open ? "collapse" : "expand"}
+          onClick={() => setOpen((o) => !o)}
+          className="flex size-4 shrink-0 items-center justify-center text-bone-muted hover:text-bone"
+        >
+          <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} strokeWidth={1.6} />
+        </button>
+        <button
+          type="button"
+          onClick={() => selectProject(project.id)}
+          className="flex min-w-0 flex-1 items-center gap-1.5"
+        >
           {open ? (
             <FolderOpen className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
           ) : (
             <Folder className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
           )}
-          <span className="min-w-0 flex-1 truncate text-left text-[12px] text-bone-dim">{project.name}</span>
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-left text-[12px]",
+              isActive ? "text-ember" : "text-bone-dim"
+            )}
+          >
+            {project.name}
+          </span>
+          {links.length > 0 && (
+            <span
+              title={`${links.length} knowledge link${links.length === 1 ? "" : "s"}`}
+              className="shrink-0 rounded bg-ember-soft px-1 font-mono text-[10px] text-ember"
+            >
+              {links.length}
+            </span>
+          )}
         </button>
         {hovered && (
           <>
+            <button type="button" title="manage knowledge" onClick={() => openPicker(project.id)} className="shrink-0 rounded p-0.5 text-bone-muted hover:text-bone">
+              <BookMarked className="size-3" strokeWidth={1.6} />
+            </button>
             <button type="button" title="new chat in project" disabled={isRunning} onClick={onNewConversation} className="shrink-0 rounded p-0.5 text-bone-muted hover:text-bone disabled:opacity-40">
               <Plus className="size-3" strokeWidth={1.6} />
             </button>
@@ -755,23 +804,56 @@ function ProjectFolder({
         )}
       </div>
       {open && (
-        <ul className="ml-2 space-y-0.5 border-l border-rule/50 pl-1">
-          {conversations.map((c) => (
-            <ConversationItem
-              key={c.id}
-              id={c.id}
-              title={c.title}
-              active={c.id === activeConversationId}
-              isRunning={isRunning}
-              onSelect={() => onSelect(c.id)}
-              onDelete={() => onDelete(c.id)}
-              indent
-            />
-          ))}
-          {conversations.length === 0 && (
-            <li className="px-4 py-1 text-[11px] text-bone-muted">empty</li>
+        <>
+          {links.length > 0 && (
+            <ul className="ml-5 mb-1 flex flex-wrap gap-1">
+              {links.map((link) => {
+                const label = link.ref_path.split("/").slice(-2).join("/");
+                const isFolder = link.ref_type === "page_folder";
+                return (
+                  <li key={link.id}>
+                    <span
+                      title={`${link.ref_type}: ${link.ref_path}`}
+                      className="group inline-flex items-center gap-1 rounded border border-rule bg-ground/40 px-1.5 py-0.5 font-mono text-[10px] text-bone-dim"
+                    >
+                      {isFolder ? (
+                        <Folder className="size-2.5 text-ember" strokeWidth={1.6} />
+                      ) : (
+                        <FileText className="size-2.5 text-bone-muted" strokeWidth={1.6} />
+                      )}
+                      <span className="truncate max-w-[140px]">{label}</span>
+                      <button
+                        type="button"
+                        aria-label="unpin"
+                        onClick={() => removeKnowledge(project.id, link.id).catch(() => undefined)}
+                        className="text-bone-muted hover:text-red-400 opacity-0 group-hover:opacity-100"
+                      >
+                        <X className="size-2.5" strokeWidth={1.8} />
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
           )}
-        </ul>
+          <ul className="ml-2 space-y-0.5 border-l border-rule/50 pl-1">
+            {conversations.map((c) => (
+              <ConversationItem
+                key={c.id}
+                id={c.id}
+                title={c.title}
+                active={c.id === activeConversationId}
+                isRunning={isRunning}
+                onSelect={() => onSelect(c.id)}
+                onDelete={() => onDelete(c.id)}
+                indent
+              />
+            ))}
+            {conversations.length === 0 && (
+              <li className="px-4 py-1 text-[11px] text-bone-muted">empty</li>
+            )}
+          </ul>
+        </>
       )}
     </li>
   );

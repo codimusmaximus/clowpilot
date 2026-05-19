@@ -153,6 +153,18 @@ def init() -> None:
                 position INTEGER NOT NULL,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS project_knowledge (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                ref_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE (project_id, ref_type, ref_path),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS project_knowledge_project_id
+                ON project_knowledge(project_id);
             """
         )
         columns = {
@@ -171,6 +183,17 @@ def init() -> None:
             conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt_id TEXT")
         if "project_id" not in conversation_columns:
             conn.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT")
+        project_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(projects)").fetchall()
+        }
+        if "knowledge_mode" not in project_columns:
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN knowledge_mode TEXT NOT NULL DEFAULT 'full'"
+            )
+        if "knowledge_preview_tokens" not in project_columns:
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN knowledge_preview_tokens INTEGER NOT NULL DEFAULT 500"
+            )
         row = conn.execute("SELECT COUNT(*) AS count FROM conversations").fetchone()
         if int(row["count"]) == 0:
             conversation_id = str(uuid.uuid4())
@@ -784,6 +807,28 @@ def ensure_conversation(conversation_id: str | None = None) -> dict[str, Any]:
     return create_conversation()
 
 
+def get_conversation(conversation_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, title, system_prompt_id, project_id, created_at, updated_at
+            FROM conversations
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "systemPromptId": row["system_prompt_id"],
+        "projectId": row["project_id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
 def delete_conversation(conversation_id: str) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -816,6 +861,21 @@ def set_conversation_project(
     }
 
 
+KNOWLEDGE_MODES = ("full", "preview", "metadata")
+
+
+def _project_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "systemPromptId": row["system_prompt_id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "knowledgeMode": row["knowledge_mode"],
+        "knowledgePreviewTokens": row["knowledge_preview_tokens"],
+    }
+
+
 def create_project(name: str, system_prompt_id: str | None = None) -> dict[str, Any]:
     project_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
@@ -830,47 +890,327 @@ def create_project(name: str, system_prompt_id: str | None = None) -> dict[str, 
         "systemPromptId": system_prompt_id,
         "createdAt": now,
         "updatedAt": now,
+        "knowledgeMode": "full",
+        "knowledgePreviewTokens": 500,
     }
 
 
 def list_projects() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, system_prompt_id, created_at, updated_at FROM projects ORDER BY created_at ASC"
+            "SELECT id, name, system_prompt_id, created_at, updated_at, "
+            "knowledge_mode, knowledge_preview_tokens "
+            "FROM projects ORDER BY created_at ASC"
         ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "name": row["name"],
-            "systemPromptId": row["system_prompt_id"],
-            "createdAt": row["created_at"],
-            "updatedAt": row["updated_at"],
-        }
-        for row in rows
-    ]
+    return [_project_row_to_dict(row) for row in rows]
 
 
 def get_project(project_id: str) -> dict[str, Any] | None:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, name, system_prompt_id, created_at, updated_at FROM projects WHERE id = ?",
+            "SELECT id, name, system_prompt_id, created_at, updated_at, "
+            "knowledge_mode, knowledge_preview_tokens "
+            "FROM projects WHERE id = ?",
             (project_id,),
         ).fetchone()
     if row is None:
         return None
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "systemPromptId": row["system_prompt_id"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-    }
+    return _project_row_to_dict(row)
+
+
+def set_project_knowledge_settings(
+    project_id: str,
+    mode: str,
+    preview_tokens: int,
+) -> dict[str, Any] | None:
+    if mode not in KNOWLEDGE_MODES:
+        raise ValueError(f"unsupported knowledge_mode: {mode}")
+    preview_tokens = max(50, min(int(preview_tokens), 5000))
+    now = int(time.time() * 1000)
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE projects SET knowledge_mode = ?, knowledge_preview_tokens = ?, updated_at = ? WHERE id = ?",
+            (mode, preview_tokens, now, project_id),
+        )
+    return get_project(project_id)
 
 
 def delete_project(project_id: str) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Project knowledge — pinned workspace items used as background context
+# ---------------------------------------------------------------------------
+
+PROJECT_KNOWLEDGE_REF_TYPES = ("page", "page_folder")
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough heuristic: ~4 chars per token for English/markdown.
+
+    Not exact — intended for context-budget decisions (what fits, what gets
+    truncated). Swap for tiktoken or anthropic.count_tokens if precision matters.
+    """
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> tuple[str, bool]:
+    """Truncate text to roughly max_tokens. Returns (truncated_text, was_truncated)."""
+    target_chars = max_tokens * 4
+    if len(text) <= target_chars:
+        return text, False
+    return text[:target_chars].rstrip() + "…", True
+
+
+def list_project_knowledge(project_id: str) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, project_id, ref_type, ref_path, created_at
+            FROM project_knowledge
+            WHERE project_id = ?
+            ORDER BY ref_type, ref_path
+            """,
+            (project_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_project_knowledge(
+    project_id: str,
+    ref_type: str,
+    ref_path: str,
+) -> dict[str, Any]:
+    if ref_type not in PROJECT_KNOWLEDGE_REF_TYPES:
+        raise ValueError(f"unsupported ref_type: {ref_type}")
+    ref_path = ref_path.strip().lstrip("/")
+    if not ref_path:
+        raise ValueError("ref_path is required")
+    link_id = str(uuid.uuid4())
+    now = int(time.time() * 1000)
+    with _connect() as conn:
+        existing = conn.execute(
+            """
+            SELECT id, project_id, ref_type, ref_path, created_at
+            FROM project_knowledge
+            WHERE project_id = ? AND ref_type = ? AND ref_path = ?
+            """,
+            (project_id, ref_type, ref_path),
+        ).fetchone()
+        if existing:
+            return dict(existing)
+        conn.execute(
+            """
+            INSERT INTO project_knowledge (id, project_id, ref_type, ref_path, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (link_id, project_id, ref_type, ref_path, now),
+        )
+    return {
+        "id": link_id,
+        "project_id": project_id,
+        "ref_type": ref_type,
+        "ref_path": ref_path,
+        "created_at": now,
+    }
+
+
+def remove_project_knowledge(project_id: str, link_id: str) -> bool:
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM project_knowledge WHERE id = ? AND project_id = ?",
+            (link_id, project_id),
+        )
+    return cursor.rowcount > 0
+
+
+def expand_project_knowledge(
+    project_id: str,
+    max_total_tokens: int = 10_000,
+    mode: str | None = None,
+    preview_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Resolve a project's knowledge links into included pages + truncation info.
+
+    Returns:
+        {
+          "included":   [{ref_type, ref_path, content, tokens, bytes, from_folder?}, ...],
+          "truncated":  [{ref_type, ref_path, tokens, reason, from_folder?}, ...],
+          "total_tokens": int,
+          "max_tokens":   int,
+        }
+
+    Strategy: load page contents, expand `page_folder` refs recursively to all
+    descendant pages, sort smallest-first so we fit as many as possible under
+    the token cap, then drop the rest into `truncated`.
+    """
+    # Resolve per-project settings if not overridden.
+    if mode is None or preview_tokens is None:
+        proj = get_project(project_id)
+        if proj:
+            mode = mode or proj.get("knowledgeMode") or "full"
+            preview_tokens = preview_tokens or proj.get("knowledgePreviewTokens") or 500
+        else:
+            mode = mode or "full"
+            preview_tokens = preview_tokens or 500
+    if mode not in KNOWLEDGE_MODES:
+        mode = "full"
+
+    links = list_project_knowledge(project_id)
+    if not links:
+        return {
+            "included": [],
+            "truncated": [],
+            "total_tokens": 0,
+            "max_tokens": max_total_tokens,
+            "mode": mode,
+            "preview_tokens": preview_tokens,
+        }
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    with _connect() as conn:
+        for link in links:
+            ref_type = link["ref_type"]
+            ref_path = link["ref_path"]
+            if ref_type == "page":
+                row = conn.execute(
+                    "SELECT path, content, bytes FROM files WHERE path = ?",
+                    (ref_path,),
+                ).fetchone()
+                if not row:
+                    candidates.append(
+                        {
+                            "ref_type": ref_type,
+                            "ref_path": ref_path,
+                            "content": None,
+                            "tokens": 0,
+                            "bytes": 0,
+                            "missing": True,
+                        }
+                    )
+                    continue
+                if row["path"] in seen:
+                    continue
+                seen.add(row["path"])
+                content = row["content"]
+                candidates.append(
+                    {
+                        "ref_type": ref_type,
+                        "ref_path": row["path"],
+                        "content": content,
+                        "tokens": estimate_tokens(content),
+                        "bytes": int(row["bytes"]),
+                    }
+                )
+            elif ref_type == "page_folder":
+                # Recursive: every page under this folder, any depth.
+                folder = ref_path.rstrip("/") + "/"
+                rows = conn.execute(
+                    """
+                    SELECT path, content, bytes
+                    FROM files
+                    WHERE path LIKE ?
+                    ORDER BY path
+                    """,
+                    (folder + "%",),
+                ).fetchall()
+                for row in rows:
+                    if row["path"] in seen:
+                        continue
+                    seen.add(row["path"])
+                    content = row["content"]
+                    candidates.append(
+                        {
+                            "ref_type": "page",
+                            "ref_path": row["path"],
+                            "content": content,
+                            "tokens": estimate_tokens(content),
+                            "bytes": int(row["bytes"]),
+                            "from_folder": ref_path,
+                        }
+                    )
+
+    # Metadata mode: no contents at all — record everything as inventory only.
+    if mode == "metadata":
+        truncated = []
+        for c in candidates:
+            entry = {
+                "ref_type": c["ref_type"],
+                "ref_path": c["ref_path"],
+                "tokens": c.get("tokens", 0),
+                "reason": "metadata-only mode" if not c.get("missing") else "not found",
+            }
+            if "from_folder" in c:
+                entry["from_folder"] = c["from_folder"]
+            truncated.append(entry)
+        return {
+            "included": [],
+            "truncated": truncated,
+            "total_tokens": 0,
+            "max_tokens": max_total_tokens,
+            "mode": mode,
+            "preview_tokens": preview_tokens,
+        }
+
+    # For preview mode, replace each candidate's content with a token-bounded
+    # head slice. We do this before sorting so the tokens used for budgeting
+    # reflect what will actually be inlined.
+    if mode == "preview":
+        for c in candidates:
+            if c.get("missing") or not c.get("content"):
+                continue
+            preview_text, was_clipped = _truncate_to_tokens(c["content"], preview_tokens)
+            c["content"] = preview_text
+            c["tokens"] = estimate_tokens(preview_text)
+            c["preview_clipped"] = was_clipped
+
+    # Smallest first so we maximise the number of items inlined.
+    candidates.sort(key=lambda c: c.get("tokens") or 0)
+
+    included: list[dict[str, Any]] = []
+    truncated: list[dict[str, Any]] = []
+    total = 0
+    for c in candidates:
+        if c.get("missing"):
+            truncated.append(
+                {
+                    "ref_type": c["ref_type"],
+                    "ref_path": c["ref_path"],
+                    "tokens": 0,
+                    "reason": "not found",
+                }
+            )
+            continue
+        toks = c["tokens"]
+        if total + toks > max_total_tokens and included:
+            truncated.append(
+                {
+                    "ref_type": c["ref_type"],
+                    "ref_path": c["ref_path"],
+                    "tokens": toks,
+                    "reason": "token cap",
+                    **({"from_folder": c["from_folder"]} if "from_folder" in c else {}),
+                }
+            )
+            continue
+        included.append(c)
+        total += toks
+
+    return {
+        "included": included,
+        "truncated": truncated,
+        "total_tokens": total,
+        "max_tokens": max_total_tokens,
+        "mode": mode,
+        "preview_tokens": preview_tokens,
+    }
 
 
 def set_conversation_system_prompt(

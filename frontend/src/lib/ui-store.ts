@@ -10,6 +10,8 @@ type UIState = {
   lastSidebarView: Exclude<SidebarView, null>;
   rightOpen: boolean;
   promptModalOpen: boolean;
+  knowledgePickerProjectId: string | null;
+  sessionInfoOpen: boolean;
 
   toggleSidebarView: (v: Exclude<SidebarView, null>) => void;
   collapseSidebar: () => void;
@@ -18,6 +20,10 @@ type UIState = {
   toggleRight: () => void;
   openPromptModal: () => void;
   closePromptModal: () => void;
+  openKnowledgePicker: (projectId: string) => void;
+  closeKnowledgePicker: () => void;
+  openSessionInfo: () => void;
+  closeSessionInfo: () => void;
 };
 
 export const useUIStore = create<UIState>()(
@@ -27,6 +33,8 @@ export const useUIStore = create<UIState>()(
       lastSidebarView: "explorer" as Exclude<SidebarView, null>,
       rightOpen: true,
       promptModalOpen: false,
+      knowledgePickerProjectId: null,
+      sessionInfoOpen: false,
 
       toggleSidebarView: (v) =>
         set((s) => ({
@@ -44,6 +52,10 @@ export const useUIStore = create<UIState>()(
       toggleRight: () => set((s) => ({ rightOpen: !s.rightOpen })),
       openPromptModal: () => set({ promptModalOpen: true }),
       closePromptModal: () => set({ promptModalOpen: false }),
+      openKnowledgePicker: (projectId) => set({ knowledgePickerProjectId: projectId }),
+      closeKnowledgePicker: () => set({ knowledgePickerProjectId: null }),
+      openSessionInfo: () => set({ sessionInfoOpen: true }),
+      closeSessionInfo: () => set({ sessionInfoOpen: false }),
     }),
     {
       name: "copilot-ui-state",
