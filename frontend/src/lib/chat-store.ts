@@ -104,6 +104,27 @@ const PRINTABLE_LANGS = new Set([
   "text",
 ]);
 
+// Tools whose result can be (re)projected onto the workspace pane — e.g. when
+// the user clicks the tool-call card to bring a display/draft back after refresh.
+export const REOPENABLE_TOOLS = new Set([
+  "display",
+  "display_file",
+  "display_image",
+  "snippet",
+  "write_file",
+  "page_write",
+  "replace_in_file",
+  "replace_file_lines",
+  "page_patch",
+  "page_patch_lines",
+  "highlight",
+]);
+
+/** Public entry point: re-open a tool's result in the workspace pane. */
+export function openToolResultInWorkspace(name: string, result: unknown) {
+  applyToolToWorkspace(name, result);
+}
+
 function applyToolToWorkspace(name: string, result: unknown) {
   if (!result || typeof result !== "object") return;
   const r = result as Record<string, unknown>;

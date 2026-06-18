@@ -40,6 +40,11 @@ function ImageViewer({ tab }: { tab: ImageTab }) {
 }
 
 export function Workspace() {
+  // Restore persisted tabs/highlights on the client (store uses skipHydration).
+  useEffect(() => {
+    void useWorkspace.persist.rehydrate();
+  }, []);
+
   const tabs = useWorkspace((s) => s.tabs);
   const activeTabId = useWorkspace((s) => s.activeTabId);
   const setActive = useWorkspace((s) => s.setActive);

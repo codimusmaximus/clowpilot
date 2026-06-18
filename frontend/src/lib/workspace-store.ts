@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 import type { FileNode, Highlight, ImageTab, Tab } from "./types";
 
 type WorkspaceState = {
@@ -61,7 +62,9 @@ const fileTabId = (path: string) => `file:${path}`;
 const snippetTabId = () =>
   `snippet:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
-export const useWorkspace = create<WorkspaceState>((set) => ({
+export const useWorkspace = create<WorkspaceState>()(
+  persist(
+    (set) => ({
   tabs: [],
   activeTabId: null,
   highlights: [],
@@ -191,4 +194,19 @@ export const useWorkspace = create<WorkspaceState>((set) => ({
     }),
 
   setActive: (id) => set({ activeTabId: id }),
-}));
+    }),
+    {
+      name: "atelier:workspace",
+      storage: createJSONStorage(() => localStorage),
+      // Persist only the user-visible workspace state; trees are re-fetched.
+      partialize: (s) => ({
+        tabs: s.tabs,
+        activeTabId: s.activeTabId,
+        highlights: s.highlights,
+      }),
+      // Hydrate explicitly on the client (see Workspace mount) to avoid an
+      // SSR/client markup mismatch.
+      skipHydration: true,
+    },
+  ),
+);

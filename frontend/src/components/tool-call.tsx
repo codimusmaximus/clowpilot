@@ -12,9 +12,14 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  PanelRight,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { useChatStore } from "@/lib/chat-store";
+import {
+  useChatStore,
+  openToolResultInWorkspace,
+  REOPENABLE_TOOLS,
+} from "@/lib/chat-store";
 import type { ToolCallPart } from "@/lib/types";
 
 type IconComponent = React.ComponentType<{
@@ -155,57 +160,86 @@ export function ToolCallCard({ part }: { part: ToolCallPart }) {
   const mainText = preview ? shown : summary || part.toolName;
   const isOpenable = !!part.args || !!part.result;
 
+  const hasResult = part.result !== undefined && part.result !== null;
+  const resultIsError =
+    hasResult &&
+    typeof part.result === "object" &&
+    "error" in (part.result as Record<string, unknown>);
+  // Clickable to (re)show the display/draft in the workspace pane.
+  const canOpen = REOPENABLE_TOOLS.has(part.toolName) && hasResult && !resultIsError;
+
+  const handleRowClick = () => {
+    if (canOpen) openToolResultInWorkspace(part.toolName, part.result);
+    else if (isOpenable) setOpen((o) => !o);
+  };
+
   return (
     <div
       className="tool-card my-2 rounded border border-rule bg-ground-2/40"
       data-status={part.status}
     >
-      <button
-        type="button"
-        onClick={() => isOpenable && setOpen((o) => !o)}
-        className={cn(
-          "flex w-full items-center gap-2.5 px-3 py-2 text-left",
-          isOpenable && "cursor-pointer hover:bg-ground-2"
-        )}
-      >
-        <Icon
+      <div className="flex w-full items-center gap-2.5 px-3 py-2">
+        <button
+          type="button"
+          onClick={handleRowClick}
+          title={canOpen ? "show in workspace" : isOpenable ? "show details" : undefined}
           className={cn(
-            "size-3.5 shrink-0 text-bone-dim",
-            (part.status === "streaming" || part.status === "executing") &&
-              "text-ember"
-          )}
-          strokeWidth={1.6}
-        />
-        <span className="smallcaps text-bone-muted">{meta.label}</span>
-        <span
-          className={cn(
-            "truncate text-xs",
-            preview ? "italic text-bone-dim" : "font-mono",
-            part.status === "streaming" && !preview
-              ? "shimmer-text"
-              : "text-bone-dim"
+            "flex min-w-0 flex-1 items-center gap-2.5 text-left",
+            (canOpen || isOpenable) && "cursor-pointer"
           )}
         >
-          {mainText}
-          {typing && (
-            <span
-              className="ml-px inline-block h-3 w-px translate-y-[2px] bg-ember ember-pulse"
-              aria-hidden
-            />
-          )}
-        </span>
-        <span className="flex-1" />
-        <StatusIcon status={part.status} />
-        {isOpenable && (
-          <ChevronDown
+          <Icon
             className={cn(
-              "size-3 text-bone-muted transition-transform",
-              open && "rotate-180"
+              "size-3.5 shrink-0 text-bone-dim",
+              (part.status === "streaming" || part.status === "executing") &&
+                "text-ember"
             )}
             strokeWidth={1.6}
           />
+          <span className="smallcaps shrink-0 text-bone-muted">{meta.label}</span>
+          <span
+            className={cn(
+              "truncate text-xs",
+              preview ? "italic text-bone-dim" : "font-mono",
+              part.status === "streaming" && !preview
+                ? "shimmer-text"
+                : "text-bone-dim"
+            )}
+          >
+            {mainText}
+            {typing && (
+              <span
+                className="ml-px inline-block h-3 w-px translate-y-[2px] bg-ember ember-pulse"
+                aria-hidden
+              />
+            )}
+          </span>
+        </button>
+        <StatusIcon status={part.status} />
+        {canOpen && (
+          <PanelRight
+            className="size-3 shrink-0 text-bone-muted"
+            strokeWidth={1.6}
+            aria-hidden
+          />
         )}
-      </button>
+        {isOpenable && (
+          <button
+            type="button"
+            aria-label={open ? "hide details" : "show details"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen((o) => !o);
+            }}
+            className="shrink-0 rounded p-0.5 text-bone-muted hover:bg-ground-2 hover:text-bone"
+          >
+            <ChevronDown
+              className={cn("size-3 transition-transform", open && "rotate-180")}
+              strokeWidth={1.6}
+            />
+          </button>
+        )}
+      </div>
 
       {open && (
         <div className="border-t border-rule px-3 py-2 font-mono text-[11px]">
