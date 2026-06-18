@@ -17,6 +17,8 @@ provider and emits a brief notice in the chat.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import os
 from typing import Any, AsyncIterator
@@ -448,12 +450,19 @@ def _project_knowledge_block(conversation_id: str | None) -> str:
 
 def _build_agent(conversation_id: str | None = None, model: str | None = None) -> Agent:
     model_str = model or _active_model
-    runtime_agent = Agent(model_str)
+    runtime_agent = Agent(
+        model_str,
+        toolsets=plugin_registry.mcp_toolsets(conversation_id),
+    )
 
     def wrap_handler(handler):
-        def safe_handler(*args, **kwargs):
+        @functools.wraps(handler)
+        async def safe_handler(*args, **kwargs):
             try:
-                return handler(*args, **kwargs)
+                result = handler(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
             except Exception as e:
                 return f"Tool call failed: {type(e).__name__}: {e}"
         return safe_handler
@@ -498,54 +507,57 @@ async def _stream_model(
     tool_calls: dict[int, dict[str, str]] = {}
     runtime_agent = _build_agent(conversation_id, model_str)
 
-    async for event in runtime_agent.run_stream_events(
-        prompt,
-        message_history=history,
-        instructions=_compose_system_prompt(
-            base_prompt=system_prompt or BASE_SYSTEM_PROMPT,
-            conversation_id=conversation_id,
-        ),
-    ):
-        if isinstance(event, PartStartEvent):
-            part = event.part
-            if isinstance(part, TextPart):
-                if part.content:
-                    yield {"type": "text-delta", "delta": part.content}
-            elif isinstance(part, ToolCallPart):
-                tool_calls[event.index] = {"id": part.tool_call_id, "name": part.tool_name}
-                yield {"type": "tool-call-start", "id": part.tool_call_id, "name": part.tool_name}
-                if part.args:
-                    delta = part.args if isinstance(part.args, str) else json.dumps(part.args)
-                    yield {"type": "tool-call-input-delta", "id": part.tool_call_id, "delta": delta}
+    # Entering the agent context opens connections to any attached MCP servers
+    # (and is a cheap no-op when there are none).
+    async with runtime_agent:
+        async for event in runtime_agent.run_stream_events(
+            prompt,
+            message_history=history,
+            instructions=_compose_system_prompt(
+                base_prompt=system_prompt or BASE_SYSTEM_PROMPT,
+                conversation_id=conversation_id,
+            ),
+        ):
+            if isinstance(event, PartStartEvent):
+                part = event.part
+                if isinstance(part, TextPart):
+                    if part.content:
+                        yield {"type": "text-delta", "delta": part.content}
+                elif isinstance(part, ToolCallPart):
+                    tool_calls[event.index] = {"id": part.tool_call_id, "name": part.tool_name}
+                    yield {"type": "tool-call-start", "id": part.tool_call_id, "name": part.tool_name}
+                    if part.args:
+                        delta = part.args if isinstance(part.args, str) else json.dumps(part.args)
+                        yield {"type": "tool-call-input-delta", "id": part.tool_call_id, "delta": delta}
 
-        elif isinstance(event, PartDeltaEvent):
-            delta = event.delta
-            if isinstance(delta, TextPartDelta):
-                yield {"type": "text-delta", "delta": delta.content_delta}
-            elif isinstance(delta, ToolCallPartDelta):
-                tc = tool_calls.get(event.index)
-                if tc and delta.args_delta is not None:
-                    chunk = (
-                        delta.args_delta
-                        if isinstance(delta.args_delta, str)
-                        else json.dumps(delta.args_delta)
-                    )
-                    yield {"type": "tool-call-input-delta", "id": tc["id"], "delta": chunk}
+            elif isinstance(event, PartDeltaEvent):
+                delta = event.delta
+                if isinstance(delta, TextPartDelta):
+                    yield {"type": "text-delta", "delta": delta.content_delta}
+                elif isinstance(delta, ToolCallPartDelta):
+                    tc = tool_calls.get(event.index)
+                    if tc and delta.args_delta is not None:
+                        chunk = (
+                            delta.args_delta
+                            if isinstance(delta.args_delta, str)
+                            else json.dumps(delta.args_delta)
+                        )
+                        yield {"type": "tool-call-input-delta", "id": tc["id"], "delta": chunk}
 
-        elif isinstance(event, FunctionToolCallEvent):
-            part = event.part
-            args = part.args
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args) if args else {}
-                except json.JSONDecodeError:
-                    args = {}
-            yield {"type": "tool-call-input", "id": part.tool_call_id, "name": part.tool_name, "input": args or {}}
+            elif isinstance(event, FunctionToolCallEvent):
+                part = event.part
+                args = part.args
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                yield {"type": "tool-call-input", "id": part.tool_call_id, "name": part.tool_name, "input": args or {}}
 
-        elif isinstance(event, FunctionToolResultEvent):
-            result = event.result
-            if isinstance(result, ToolReturnPart):
-                yield {"type": "tool-result", "id": result.tool_call_id, "name": result.tool_name, "result": result.content}
+            elif isinstance(event, FunctionToolResultEvent):
+                result = event.result
+                if isinstance(result, ToolReturnPart):
+                    yield {"type": "tool-result", "id": result.tool_call_id, "name": result.tool_name, "result": result.content}
 
 
 async def run(

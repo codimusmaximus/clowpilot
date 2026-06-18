@@ -135,6 +135,29 @@ def init() -> None:
                 updated_at REAL NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS oauth_tokens (
+                provider TEXT PRIMARY KEY,
+                access_token TEXT,
+                refresh_token TEXT,
+                expires_at REAL NOT NULL DEFAULT 0,
+                scope TEXT NOT NULL DEFAULT '',
+                account TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT 'http',
+                url TEXT NOT NULL,
+                headers TEXT NOT NULL DEFAULT '{}',
+                instructions TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                tool_prefix TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS conversation_plugins (
                 conversation_id TEXT NOT NULL,
                 plugin_id TEXT NOT NULL,
@@ -1540,6 +1563,135 @@ def set_plugin_enabled(
         "config": next_config,
         "updatedAt": now,
     }
+
+
+def get_oauth_token(provider: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM oauth_tokens WHERE provider = ?", (provider,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "provider": row["provider"],
+        "access_token": row["access_token"],
+        "refresh_token": row["refresh_token"],
+        "expires_at": row["expires_at"],
+        "scope": row["scope"],
+        "account": row["account"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def set_oauth_token(
+    provider: str,
+    access_token: str | None,
+    refresh_token: str | None,
+    expires_at: float,
+    scope: str = "",
+    account: str = "",
+) -> None:
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO oauth_tokens
+                (provider, access_token, refresh_token, expires_at, scope, account, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                access_token = excluded.access_token,
+                refresh_token = COALESCE(excluded.refresh_token, oauth_tokens.refresh_token),
+                expires_at = excluded.expires_at,
+                scope = excluded.scope,
+                account = CASE WHEN excluded.account != '' THEN excluded.account ELSE oauth_tokens.account END,
+                updated_at = excluded.updated_at
+            """,
+            (provider, access_token, refresh_token, expires_at, scope, account, now),
+        )
+
+
+def delete_oauth_token(provider: str) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM oauth_tokens WHERE provider = ?", (provider,))
+    return cur.rowcount > 0
+
+
+def _row_to_mcp_server(row: Any) -> dict[str, Any]:
+    try:
+        headers = json.loads(row["headers"]) if row["headers"] else {}
+    except json.JSONDecodeError:
+        headers = {}
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "transport": row["transport"],
+        "url": row["url"],
+        "headers": headers if isinstance(headers, dict) else {},
+        "instructions": row["instructions"] or "",
+        "description": row["description"] or "",
+        "toolPrefix": row["tool_prefix"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_mcp_servers() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM mcp_servers ORDER BY created_at ASC"
+        ).fetchall()
+    return [_row_to_mcp_server(row) for row in rows]
+
+
+def get_mcp_server(server_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM mcp_servers WHERE id = ?", (server_id,)
+        ).fetchone()
+    return _row_to_mcp_server(row) if row else None
+
+
+def upsert_mcp_server(
+    server_id: str,
+    name: str,
+    transport: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+    instructions: str = "",
+    description: str = "",
+    tool_prefix: str | None = None,
+) -> dict[str, Any]:
+    now = time.time()
+    headers_json = json.dumps(headers or {})
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO mcp_servers
+                (id, name, transport, url, headers, instructions, description,
+                 tool_prefix, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                transport = excluded.transport,
+                url = excluded.url,
+                headers = excluded.headers,
+                instructions = excluded.instructions,
+                description = excluded.description,
+                tool_prefix = excluded.tool_prefix,
+                updated_at = excluded.updated_at
+            """,
+            (
+                server_id, name, transport, url, headers_json, instructions,
+                description, tool_prefix, now, now,
+            ),
+        )
+    return get_mcp_server(server_id)  # type: ignore[return-value]
+
+
+def delete_mcp_server(server_id: str) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM mcp_servers WHERE id = ?", (server_id,))
+    return cur.rowcount > 0
 
 
 def get_conversation_plugins(conversation_id: str) -> list[dict[str, Any]]:

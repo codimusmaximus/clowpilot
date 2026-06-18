@@ -20,8 +20,28 @@ class ToolSpec:
 
 
 @dataclass(frozen=True)
+class McpServerConfig:
+    """Connection details for a remote MCP server (HTTP / SSE transport).
+
+    `url` and `headers` values may contain ``${ENV_VAR}`` placeholders that are
+    resolved against the process environment when the toolset is built, so that
+    secrets (API tokens) live in the environment rather than the database.
+    """
+
+    transport: Literal["http", "sse"]
+    url: str
+    headers: dict[str, str] = field(default_factory=dict)
+    tool_prefix: str | None = None
+
+
+@dataclass(frozen=True)
 class PluginSpec:
-    """A self-contained plugin definition loaded from code."""
+    """A self-contained plugin definition loaded from code.
+
+    Most plugins expose local ``tools``. A plugin may instead (or additionally)
+    carry an ``mcp`` config, in which case its capabilities are provided by a
+    remote MCP server attached to the agent as a toolset.
+    """
 
     id: str
     name: str
@@ -30,3 +50,4 @@ class PluginSpec:
     instructions: str = ""
     description: str = ""
     config_schema: dict[str, Any] | None = None
+    mcp: McpServerConfig | None = None

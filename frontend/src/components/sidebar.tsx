@@ -28,6 +28,7 @@ import { useUIStore, type SidebarView } from "@/lib/ui-store";
 import { fetchPageTree, fetchFileTree, fetchFile, uploadFile } from "@/lib/api";
 import type { FileNode, PluginStatus } from "@/lib/types";
 import type { ProjectKnowledgeLink } from "@/lib/api";
+import { OutlookConnect, OUTLOOK_PLUGIN_ID } from "./outlook-connect";
 
 const EMPTY_LINKS: ProjectKnowledgeLink[] = [];
 
@@ -528,6 +529,19 @@ function SettingsPanel({
                             core
                           </span>
                         )}
+                        {plugin.isMcp && (
+                          <span className="shrink-0 rounded border border-rule/60 px-1 py-px font-mono text-[9px] text-bone-muted/60">
+                            mcp
+                          </span>
+                        )}
+                        {plugin.isMcp && plugin.mcpConfigured === false && (
+                          <span
+                            title="MCP server URL/token not configured — set the env vars to enable"
+                            className="shrink-0 rounded border border-amber-500/40 px-1 py-px font-mono text-[9px] text-amber-500/80"
+                          >
+                            setup
+                          </span>
+                        )}
                       </button>
                       <button
                         type="button"
@@ -549,6 +563,12 @@ function SettingsPanel({
                         {plugin.description && (
                           <p className="mb-2 text-[11px] leading-snug text-bone-muted">
                             {plugin.description}
+                          </p>
+                        )}
+                        {plugin.isMcp && plugin.mcpConfigured === false && (
+                          <p className="mb-2 text-[11px] leading-snug text-amber-500/80">
+                            Not configured yet — set this server&apos;s URL and
+                            token environment variables, then restart the backend.
                           </p>
                         )}
                         {plugin.tools.length > 0 && (
@@ -578,6 +598,7 @@ function SettingsPanel({
                             })}
                           </div>
                         )}
+                        {plugin.id === OUTLOOK_PLUGIN_ID && <OutlookConnect />}
                       </div>
                     )}
                   </div>

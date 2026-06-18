@@ -5,6 +5,8 @@ import type {
   FileNode,
   ModelInfo,
   PluginStatus,
+  McpServer,
+  McpPreset,
   Project,
   SystemPrompt,
   UploadedAttachment,
@@ -423,6 +425,91 @@ export async function toggleConversationTool(
     }
   );
   if (!res.ok) throw new Error(`tool toggle failed: ${res.status}`);
+}
+
+export async function fetchMcpServers(): Promise<{
+  servers: McpServer[];
+  presets: McpPreset[];
+}> {
+  const res = await fetch(`${API_BASE}/api/mcp-servers`);
+  if (!res.ok) throw new Error(`mcp servers fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function saveMcpServer(input: {
+  id?: string;
+  name: string;
+  transport?: string;
+  url: string;
+  headers?: Record<string, string>;
+  instructions?: string;
+  description?: string;
+  toolPrefix?: string | null;
+}): Promise<McpServer> {
+  const res = await fetch(`${API_BASE}/api/mcp-servers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`mcp server save failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteMcpServer(serverId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/mcp-servers/${encodeURIComponent(serverId)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw new Error(`mcp server delete failed: ${res.status}`);
+}
+
+export type OutlookStatus = {
+  configured: boolean;
+  connected: boolean;
+  account: string | null;
+  pending: boolean;
+};
+
+export type OutlookLogin = {
+  userCode: string;
+  verificationUri: string;
+  message: string;
+  expiresIn: number;
+  interval: number;
+};
+
+export type OutlookPoll = {
+  status: "idle" | "pending" | "connected" | "expired" | "error";
+  account?: string | null;
+  interval?: number;
+  error?: string;
+  detail?: string;
+};
+
+export async function fetchOutlookStatus(): Promise<OutlookStatus> {
+  const res = await fetch(`${API_BASE}/api/outlook/status`);
+  if (!res.ok) throw new Error(`outlook status failed: ${res.status}`);
+  return res.json();
+}
+
+export async function startOutlookLogin(): Promise<OutlookLogin> {
+  const res = await fetch(`${API_BASE}/api/outlook/login`, { method: "POST" });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(detail || `outlook login failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function pollOutlookLogin(): Promise<OutlookPoll> {
+  const res = await fetch(`${API_BASE}/api/outlook/login/poll`, { method: "POST" });
+  if (!res.ok) throw new Error(`outlook poll failed: ${res.status}`);
+  return res.json();
+}
+
+export async function disconnectOutlook(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/outlook/disconnect`, { method: "POST" });
+  if (!res.ok) throw new Error(`outlook disconnect failed: ${res.status}`);
 }
 
 export async function fetchModels(): Promise<{

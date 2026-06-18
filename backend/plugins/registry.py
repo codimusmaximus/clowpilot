@@ -11,6 +11,7 @@ import pkgutil
 from typing import Any
 
 import db
+from plugins import mcp_servers
 from plugins.base import PluginSpec, ToolSpec
 
 
@@ -19,14 +20,18 @@ PLUGIN_MODULES: list = []
 
 
 def load_plugins() -> list[PluginSpec]:
-    """Load plugins from PLUGIN_MODULES if set, otherwise auto-discover."""
+    """Load plugins from PLUGIN_MODULES if set, otherwise auto-discover.
+
+    MCP servers (presets + DB-defined) are always appended as external plugins.
+    """
     if PLUGIN_MODULES:
-        return [m.get_plugin() for m in PLUGIN_MODULES if hasattr(m, "get_plugin")]
+        plugins = [m.get_plugin() for m in PLUGIN_MODULES if hasattr(m, "get_plugin")]
+        return plugins + mcp_servers.load_mcp_plugins()
 
     plugins = []
     package = importlib.import_module("plugins")
     for _, name, _is_pkg in pkgutil.iter_modules(package.__path__):
-        if name in ("base", "registry"):
+        if name in ("base", "registry", "mcp_servers"):
             continue
         module_name = f"plugins.{name}"
         try:
@@ -35,7 +40,7 @@ def load_plugins() -> list[PluginSpec]:
                 plugins.append(module.get_plugin())
         except Exception as e:
             print(f"Failed to load plugin {module_name}: {e}")
-    return plugins
+    return plugins + mcp_servers.load_mcp_plugins()
 
 
 def is_enabled(plugin: PluginSpec, conversation_id: str | None = None) -> bool:
@@ -69,11 +74,28 @@ def instructions(conversation_id: str | None = None) -> str:
     )
 
 
+def mcp_toolsets(conversation_id: str | None = None) -> list[Any]:
+    """Build pydantic-ai MCP toolsets for enabled, configured MCP servers."""
+    toolsets = []
+    for plugin in enabled_plugins(conversation_id):
+        if plugin.mcp is None:
+            continue
+        try:
+            toolset = mcp_servers.build_toolset(plugin)
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"Failed to build MCP toolset {plugin.id}: {e}")
+            continue
+        if toolset is not None:
+            toolsets.append(toolset)
+    return toolsets
+
+
 def list_plugin_status(conversation_id: str | None = None) -> list[dict[str, Any]]:
     rows = []
     for plugin in load_plugins():
         # Use conversation-specific config if available
         config = db.get_plugin_config(plugin.id)
+        is_mcp = plugin.mcp is not None
         rows.append(
             {
                 "id": plugin.id,
@@ -83,6 +105,8 @@ def list_plugin_status(conversation_id: str | None = None) -> list[dict[str, Any
                 "config": config,
                 "configSchema": plugin.config_schema,
                 "description": plugin.description,
+                "isMcp": is_mcp,
+                "mcpConfigured": mcp_servers.is_configured(plugin) if is_mcp else None,
                 "tools": [tool.name for tool in plugin.tools],
                 "toolsEnabled": {
                     tool.name: tool.name not in set(

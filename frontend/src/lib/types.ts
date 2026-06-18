@@ -100,6 +100,31 @@ export type PluginStatus = {
   configSchema: Record<string, unknown> | null;
   tools: string[];
   toolsEnabled?: Record<string, boolean>;
+  isMcp?: boolean;
+  mcpConfigured?: boolean | null;
+};
+
+export type McpServer = {
+  id: string;
+  name: string;
+  transport: string;
+  url: string;
+  headers: Record<string, string>;
+  instructions: string;
+  description: string;
+  toolPrefix: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type McpPreset = {
+  id: string;
+  name: string;
+  description: string;
+  transport: string | null;
+  url: string | null;
+  headers: Record<string, string>;
+  configured: boolean;
 };
 
 export type FileNode = {

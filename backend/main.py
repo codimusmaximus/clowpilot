@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ from agent import (
     split_messages,
 )
 from plugins import registry as plugin_registry
+from plugins import mcp_servers
+from plugins import outlook as outlook_plugin
 
 load_dotenv()
 
@@ -140,6 +143,17 @@ class ActiveModelRequest(BaseModel):
 class PluginSettingsRequest(BaseModel):
     enabled: bool
     config: dict[str, Any] | None = None
+
+
+class McpServerRequest(BaseModel):
+    id: str | None = None
+    name: str
+    transport: str = "http"
+    url: str
+    headers: dict[str, str] | None = None
+    instructions: str = ""
+    description: str = ""
+    toolPrefix: str | None = None
 
 
 @app.post("/api/chat")
@@ -422,6 +436,93 @@ def put_plugin(plugin_id: str, req: PluginSettingsRequest):
     if plugin_id not in plugin_ids:
         raise HTTPException(404, f"plugin not found: {plugin_id}")
     return db.set_plugin_enabled(plugin_id, req.enabled, req.config)
+
+
+# ---------- MCP servers ----------
+
+
+def _normalize_mcp_id(raw: str | None, name: str) -> str:
+    base = (raw or name or "server").strip().lower()
+    base = re.sub(r"[^a-z0-9._-]+", "-", base).strip("-.") or "server"
+    return base if base.startswith("mcp.") else f"mcp.{base}"
+
+
+@app.get("/api/mcp-servers")
+def get_mcp_servers():
+    """List custom (DB-defined) MCP servers and the built-in presets."""
+    return {
+        "servers": db.list_mcp_servers(),
+        "presets": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "transport": p.mcp.transport if p.mcp else None,
+                "url": p.mcp.url if p.mcp else None,
+                "headers": p.mcp.headers if p.mcp else {},
+                "configured": mcp_servers.is_configured(p),
+            }
+            for p in mcp_servers.PRESETS
+        ],
+    }
+
+
+@app.post("/api/mcp-servers")
+def post_mcp_server(req: McpServerRequest):
+    if req.transport not in ("http", "sse"):
+        raise HTTPException(400, f"unsupported transport: {req.transport}")
+    if not req.url.strip():
+        raise HTTPException(400, "url is required")
+    server_id = _normalize_mcp_id(req.id, req.name)
+    return db.upsert_mcp_server(
+        server_id=server_id,
+        name=req.name,
+        transport=req.transport,
+        url=req.url,
+        headers=req.headers,
+        instructions=req.instructions,
+        description=req.description,
+        tool_prefix=req.toolPrefix,
+    )
+
+
+@app.delete("/api/mcp-servers/{server_id}")
+def delete_mcp_server_endpoint(server_id: str):
+    if not db.delete_mcp_server(server_id):
+        raise HTTPException(404, f"mcp server not found: {server_id}")
+    return {"ok": True}
+
+
+# ---------- Outlook (Microsoft Graph) auth ----------
+
+
+@app.get("/api/outlook/status")
+def get_outlook_status():
+    return outlook_plugin.connection_status()
+
+
+@app.post("/api/outlook/login")
+async def post_outlook_login():
+    if not outlook_plugin.is_configured():
+        raise HTTPException(400, "OUTLOOK_CLIENT_ID not set; register an Entra app first")
+    try:
+        return await outlook_plugin.start_device_login()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"device login failed: {exc}")
+
+
+@app.post("/api/outlook/login/poll")
+async def post_outlook_login_poll():
+    try:
+        return await outlook_plugin.poll_device_login()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"login poll failed: {exc}")
+
+
+@app.post("/api/outlook/disconnect")
+def post_outlook_disconnect():
+    outlook_plugin.disconnect()
+    return {"ok": True}
 
 
 @app.get("/api/conversations/{conversation_id}/plugins")
