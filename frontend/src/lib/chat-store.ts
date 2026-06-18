@@ -10,6 +10,8 @@ import {
   createSystemPrompt as createSystemPromptApi,
   deleteConversation as deleteConversationApi,
   deleteProject as deleteProjectApi,
+  renameProject as renameProjectApi,
+  setConversationProject as setConversationProjectApi,
   fetchConversations,
   fetchFile,
   fetchMessages,
@@ -66,7 +68,9 @@ type ChatState = {
   togglePlugin: (pluginId: string, enabled: boolean) => Promise<void>;
   toggleTool: (pluginId: string, toolName: string, enabled: boolean) => Promise<void>;
   createProject: (name: string, systemPromptId?: string | null) => Promise<void>;
+  renameProject: (id: string, name: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
+  moveConversation: (id: string, projectId: string | null) => Promise<void>;
   projectKnowledge: Record<string, ProjectKnowledgeLink[]>;
   loadProjectKnowledge: (projectId: string) => Promise<void>;
   addProjectKnowledge: (projectId: string, refType: ProjectKnowledgeRefType, refPath: string) => Promise<void>;
@@ -442,6 +446,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   createProject: async (name, systemPromptId) => {
     const project = await createProjectApi(name, systemPromptId);
     set((s) => ({ projects: [...s.projects, project] }));
+  },
+
+  renameProject: async (id, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const project = await renameProjectApi(id, trimmed);
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === id ? { ...p, ...project } : p)),
+    }));
+  },
+
+  moveConversation: async (id, projectId) => {
+    await setConversationProjectApi(id, projectId);
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, projectId } : c
+      ),
+    }));
   },
 
   deleteProject: async (id) => {

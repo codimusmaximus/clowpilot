@@ -19,6 +19,8 @@ import {
   BookMarked,
   Settings2,
   Wrench,
+  FolderInput,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { workspaceImageUrl } from "@/lib/api";
@@ -677,9 +679,11 @@ function SettingsPanel({
 /* ─── Conversation item ─────────────────────────────────────────────────── */
 
 function ConversationItem({
+  id,
   title,
   active,
   isRunning,
+  projectId = null,
   onSelect,
   onDelete,
   indent = false,
@@ -688,13 +692,30 @@ function ConversationItem({
   title: string;
   active: boolean;
   isRunning: boolean;
+  projectId?: string | null;
   onSelect: () => void;
   onDelete: () => void;
   indent?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const projects = useChatStore((s) => s.projects);
+  const moveConversation = useChatStore((s) => s.moveConversation);
+
+  const targets = projects.filter((p) => p.id !== projectId);
+  const canMove = targets.length > 0 || projectId !== null;
+
+  const move = (target: string | null) => {
+    setMenuOpen(false);
+    moveConversation(id, target).catch(() => undefined);
+  };
+
   return (
-    <li onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+    <li
+      className="relative"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setMenuOpen(false); }}
+    >
       <div
         className={cn(
           "group flex w-full items-center gap-2 rounded border px-2.5 py-1.5",
@@ -713,17 +734,60 @@ function ConversationItem({
           <span className={cn("size-1.5 shrink-0 rounded-full", active ? "bg-ember" : "bg-bone-muted")} />
           <span className="min-w-0 flex-1 truncate text-left text-[12px]">{title}</span>
         </button>
-        {hovered && (
-          <button
-            type="button"
-            title="delete conversation"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="shrink-0 rounded p-0.5 text-bone-muted hover:text-red-400"
-          >
-            <Trash2 className="size-3" strokeWidth={1.6} />
-          </button>
+        {(hovered || menuOpen) && (
+          <>
+            {canMove && (
+              <button
+                type="button"
+                title="move to folder"
+                onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+                className="shrink-0 rounded p-0.5 text-bone-muted hover:text-bone"
+              >
+                <FolderInput className="size-3" strokeWidth={1.6} />
+              </button>
+            )}
+            <button
+              type="button"
+              title="delete conversation"
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              className="shrink-0 rounded p-0.5 text-bone-muted hover:text-red-400"
+            >
+              <Trash2 className="size-3" strokeWidth={1.6} />
+            </button>
+          </>
         )}
       </div>
+      {menuOpen && (
+        <div className="absolute right-1 top-full z-20 mt-0.5 min-w-[140px] max-w-[200px] rounded border border-rule bg-ground shadow-lg">
+          <p className="border-b border-rule/60 px-2 py-1 text-[10px] uppercase tracking-widest text-bone-muted">move to</p>
+          <ul className="max-h-48 overflow-y-auto py-0.5">
+            {projectId !== null && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => move(null)}
+                  className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[11.5px] text-bone-dim hover:bg-ground-2/60 hover:text-bone"
+                >
+                  <X className="size-3 shrink-0" strokeWidth={1.6} />
+                  No folder
+                </button>
+              </li>
+            )}
+            {targets.map((p) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  onClick={() => move(p.id)}
+                  className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[11.5px] text-bone-dim hover:bg-ground-2/60 hover:text-bone"
+                >
+                  <Folder className="size-3 shrink-0 text-bone-muted" strokeWidth={1.6} />
+                  <span className="truncate">{p.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </li>
   );
 }
@@ -751,15 +815,26 @@ function ProjectFolder({
 }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project.name);
 
   const links = useChatStore((s) => s.projectKnowledge[project.id]) ?? EMPTY_LINKS;
   const activeProjectId = useChatStore((s) => s.activeProjectId);
   const selectProject = useChatStore((s) => s.selectProject);
+  const renameProject = useChatStore((s) => s.renameProject);
   const loadKnowledge = useChatStore((s) => s.loadProjectKnowledge);
   const removeKnowledge = useChatStore((s) => s.removeProjectKnowledge);
   const openPicker = useUIStore((s) => s.openKnowledgePicker);
 
   const isActive = activeProjectId === project.id;
+
+  const submitRename = () => {
+    const next = nameDraft.trim();
+    setRenaming(false);
+    if (next && next !== project.name) {
+      renameProject(project.id, next).catch(() => undefined);
+    }
+  };
 
   useEffect(() => {
     loadKnowledge(project.id).catch(() => undefined);
@@ -783,35 +858,61 @@ function ProjectFolder({
         >
           <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} strokeWidth={1.6} />
         </button>
-        <button
-          type="button"
-          onClick={() => selectProject(project.id)}
-          className="flex min-w-0 flex-1 items-center gap-1.5"
-        >
-          {open ? (
-            <FolderOpen className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
-          ) : (
-            <Folder className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
-          )}
-          <span
-            className={cn(
-              "min-w-0 flex-1 truncate text-left text-[12px]",
-              isActive ? "text-ember" : "text-bone-dim"
+        {renaming ? (
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            {open ? (
+              <FolderOpen className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
+            ) : (
+              <Folder className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
             )}
+            <input
+              autoFocus
+              type="text"
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={submitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitRename();
+                if (e.key === "Escape") { setNameDraft(project.name); setRenaming(false); }
+              }}
+              className="min-w-0 flex-1 rounded border border-rule bg-ground px-1.5 py-0.5 text-[12px] text-bone outline-none"
+            />
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => selectProject(project.id)}
+            onDoubleClick={() => { setNameDraft(project.name); setRenaming(true); }}
+            className="flex min-w-0 flex-1 items-center gap-1.5"
           >
-            {project.name}
-          </span>
-          {links.length > 0 && (
+            {open ? (
+              <FolderOpen className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
+            ) : (
+              <Folder className="size-3.5 shrink-0 text-bone-dim" strokeWidth={1.6} />
+            )}
             <span
-              title={`${links.length} knowledge link${links.length === 1 ? "" : "s"}`}
-              className="shrink-0 rounded bg-ember-soft px-1 font-mono text-[10px] text-ember"
+              className={cn(
+                "min-w-0 flex-1 truncate text-left text-[12px]",
+                isActive ? "text-ember" : "text-bone-dim"
+              )}
             >
-              {links.length}
+              {project.name}
             </span>
-          )}
-        </button>
-        {hovered && (
+            {links.length > 0 && (
+              <span
+                title={`${links.length} knowledge link${links.length === 1 ? "" : "s"}`}
+                className="shrink-0 rounded bg-ember-soft px-1 font-mono text-[10px] text-ember"
+              >
+                {links.length}
+              </span>
+            )}
+          </button>
+        )}
+        {hovered && !renaming && (
           <>
+            <button type="button" title="rename project" onClick={() => { setNameDraft(project.name); setRenaming(true); }} className="shrink-0 rounded p-0.5 text-bone-muted hover:text-bone">
+              <Pencil className="size-3" strokeWidth={1.6} />
+            </button>
             <button type="button" title="manage knowledge" onClick={() => openPicker(project.id)} className="shrink-0 rounded p-0.5 text-bone-muted hover:text-bone">
               <BookMarked className="size-3" strokeWidth={1.6} />
             </button>
@@ -865,6 +966,7 @@ function ProjectFolder({
                 title={c.title}
                 active={c.id === activeConversationId}
                 isRunning={isRunning}
+                projectId={project.id}
                 onSelect={() => onSelect(c.id)}
                 onDelete={() => onDelete(c.id)}
                 indent

@@ -146,12 +146,43 @@ export async function createProject(
   return res.json();
 }
 
+export async function renameProject(
+  projectId: string,
+  name: string
+): Promise<Project> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }
+  );
+  if (!res.ok) throw new Error(`project rename failed: ${res.status}`);
+  return res.json();
+}
+
 export async function deleteProject(projectId: string): Promise<void> {
   const res = await fetch(
     `${API_BASE}/api/projects/${encodeURIComponent(projectId)}`,
     { method: "DELETE" }
   );
   if (!res.ok) throw new Error(`project delete failed: ${res.status}`);
+}
+
+export async function setConversationProject(
+  conversationId: string,
+  projectId: string | null
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/project`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId }),
+    }
+  );
+  if (!res.ok) throw new Error(`move conversation failed: ${res.status}`);
 }
 
 export type ProjectKnowledgeRefType = "page" | "page_folder";

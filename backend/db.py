@@ -958,6 +958,21 @@ def set_project_knowledge_settings(
     return get_project(project_id)
 
 
+def rename_project(project_id: str, name: str) -> dict[str, Any] | None:
+    name = name.strip()
+    if not name:
+        raise ValueError("name is required")
+    now = int(time.time() * 1000)
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE projects SET name = ?, updated_at = ? WHERE id = ?",
+            (name, now, project_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+    return get_project(project_id)
+
+
 def delete_project(project_id: str) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))

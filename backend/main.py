@@ -117,6 +117,10 @@ class ConversationProjectRequest(BaseModel):
     projectId: str | None = None
 
 
+class ProjectRenameRequest(BaseModel):
+    name: str
+
+
 class ProjectKnowledgeRequest(BaseModel):
     refType: str
     refPath: str
@@ -374,6 +378,17 @@ def post_project(req: ProjectRequest):
     if req.systemPromptId and db.get_system_prompt(req.systemPromptId) is None:
         raise HTTPException(404, f"system prompt not found: {req.systemPromptId}")
     return db.create_project(req.name, req.systemPromptId)
+
+
+@app.put("/api/projects/{project_id}")
+def put_project(project_id: str, req: ProjectRenameRequest):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project not found: {project_id}")
+    try:
+        project = db.rename_project(project_id, req.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return project
 
 
 @app.delete("/api/projects/{project_id}")
