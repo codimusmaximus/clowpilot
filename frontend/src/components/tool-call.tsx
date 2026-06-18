@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   Folder,
@@ -14,6 +14,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { useChatStore } from "@/lib/chat-store";
 import type { ToolCallPart } from "@/lib/types";
 
 type IconComponent = React.ComponentType<{
@@ -83,6 +84,52 @@ function StatusIcon({ status }: { status: ToolCallPart["status"] }) {
   );
 }
 
+/**
+ * Reveals `value` with a quick typewriter effect, but only when it arrives
+ * *live* (undefined → text). A value already present on first render — e.g. a
+ * persisted preview when a thread is reopened — is shown instantly, so old
+ * cards don't re-type on every load.
+ */
+function useTypewriter(value: string | undefined): { shown: string; typing: boolean } {
+  const [shown, setShown] = useState(value ?? "");
+  const [typing, setTyping] = useState(false);
+  const prev = useRef(value);
+
+  useEffect(() => {
+    const before = prev.current;
+    prev.current = value;
+
+    if (!value) {
+      setShown("");
+      setTyping(false);
+      return;
+    }
+    if (before) {
+      // Already had a preview (reload or update) — no animation.
+      setShown(value);
+      setTyping(false);
+      return;
+    }
+
+    // undefined -> text: type it in.
+    setTyping(true);
+    setShown("");
+    let i = 0;
+    const step = Math.max(1, Math.ceil(value.length / 32));
+    const id = setInterval(() => {
+      i = Math.min(value.length, i + step);
+      setShown(value.slice(0, i));
+      if (i >= value.length) {
+        clearInterval(id);
+        setTyping(false);
+      }
+    }, 18);
+    return () => clearInterval(id);
+  }, [value]);
+
+  return { shown, typing };
+}
+
 export function ToolCallCard({ part }: { part: ToolCallPart }) {
   const [open, setOpen] = useState(false);
   const meta = TOOL_META[part.toolName] ?? {
@@ -91,6 +138,21 @@ export function ToolCallCard({ part }: { part: ToolCallPart }) {
   };
   const Icon = meta.icon;
   const summary = summarize(part);
+  // The LLM-generated narration lives on the store part (assistant-ui doesn't
+  // forward custom fields through its tool-call props), so read it by id.
+  const storePreview = useChatStore((s) => {
+    for (const m of s.messages) {
+      for (const p of m.parts) {
+        if (p.type === "tool-call" && p.toolCallId === part.toolCallId) {
+          return p.preview;
+        }
+      }
+    }
+    return undefined;
+  });
+  const preview = part.preview ?? storePreview;
+  const { shown, typing } = useTypewriter(preview);
+  const mainText = preview ? shown : summary || part.toolName;
   const isOpenable = !!part.args || !!part.result;
 
   return (
@@ -117,13 +179,20 @@ export function ToolCallCard({ part }: { part: ToolCallPart }) {
         <span className="smallcaps text-bone-muted">{meta.label}</span>
         <span
           className={cn(
-            "truncate font-mono text-xs",
-            part.status === "streaming"
+            "truncate text-xs",
+            preview ? "italic text-bone-dim" : "font-mono",
+            part.status === "streaming" && !preview
               ? "shimmer-text"
               : "text-bone-dim"
           )}
         >
-          {summary || part.toolName}
+          {mainText}
+          {typing && (
+            <span
+              className="ml-px inline-block h-3 w-px translate-y-[2px] bg-ember ember-pulse"
+              aria-hidden
+            />
+          )}
         </span>
         <span className="flex-1" />
         <StatusIcon status={part.status} />

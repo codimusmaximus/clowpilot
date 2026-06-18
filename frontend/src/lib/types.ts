@@ -24,6 +24,9 @@ export type ToolCallPart = {
   args?: Record<string, unknown>;
   result?: unknown;
   status: ToolCallStatus;
+  // LLM-generated one-line narration of what the call did/is doing.
+  preview?: string;
+  previewStage?: "args" | "result";
 };
 
 export type TextPart = { type: "text"; text: string };

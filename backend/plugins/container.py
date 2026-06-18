@@ -13,11 +13,31 @@ import tools
 CONTAINER_NAME = os.environ.get("PLUGIN_CONTAINER_NAME", "copilot-workspace-container")
 IMAGE = os.environ.get("PLUGIN_CONTAINER_IMAGE", "python:3.12-slim")
 CONTAINER_WORKSPACE = "/workspace"
-HOST_WORKSPACE = str(tools.WORKSPACE)
+
+# Bind-mount source for the sandbox container. It must be a path the *host* Docker
+# daemon understands. When the backend itself runs in a container (the sibling-
+# container setup via the mounted docker socket), `tools.WORKSPACE` is the
+# backend-internal mount path (`/workspace`), NOT a host path — so HOST_WORKSPACE_DIR
+# must carry the real host path of the workspace. Run locally, `tools.WORKSPACE` is
+# already the host path, so the fallback is correct.
+HOST_WORKSPACE = os.environ.get("HOST_WORKSPACE_DIR") or str(tools.WORKSPACE)
+
+# Sandbox resource/isolation limits (hardening). All overridable via env. These
+# apply at container *creation*; an already-running container keeps the limits it
+# was created with, so change one of these and recreate the container to re-apply.
+_MEMORY = os.environ.get("PLUGIN_CONTAINER_MEMORY", "2g")
+_CPUS = os.environ.get("PLUGIN_CONTAINER_CPUS", "2")
+_PIDS_LIMIT = os.environ.get("PLUGIN_CONTAINER_PIDS_LIMIT", "512")
+# Default keeps networking on so the agent can `pip install`; set to "none" to
+# fully isolate the sandbox from the network.
+_NETWORK = os.environ.get("PLUGIN_CONTAINER_NETWORK", "bridge")
 
 INSTRUCTIONS = f"""Container plugin:
 - Execute commands and manage files in a persistent Docker container ({CONTAINER_NAME}).
-- The container bind-mounts the current app workspace at `{CONTAINER_WORKSPACE}`.
+- The container bind-mounts the app workspace at `{CONTAINER_WORKSPACE}` — files you
+  create there (plots, outputs) are visible to the workspace display tools.
+- The sandbox has resource limits ({_MEMORY} memory, {_CPUS} CPUs) and runs with
+  dropped capabilities; network access may be restricted.
 - Use `run_command` to execute shell commands.
 - Use `read_container_file` and `write_container_file` for file operations inside the container.
 - All paths are relative to `{CONTAINER_WORKSPACE}` unless absolute.
@@ -52,6 +72,12 @@ def _ensure_container():
                 "--name", CONTAINER_NAME,
                 "-v", f"{HOST_WORKSPACE}:{CONTAINER_WORKSPACE}",
                 "-w", CONTAINER_WORKSPACE,
+                "--memory", _MEMORY,
+                "--cpus", _CPUS,
+                "--pids-limit", _PIDS_LIMIT,
+                "--network", _NETWORK,
+                "--security-opt", "no-new-privileges",
+                "--cap-drop", "ALL",
                 IMAGE,
                 "tail", "-f", "/dev/null"
             ], check=True)

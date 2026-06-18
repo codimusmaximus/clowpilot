@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+# Docker CLI: the container plugin shells out to `docker` against the host socket
+# (mounted in docker-compose.yml) to manage the sandbox sibling container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 RUN pip install uv

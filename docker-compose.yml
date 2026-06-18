@@ -10,12 +10,24 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./workspace:/workspace
+      # Bind the workspace by its absolute host path so the sandbox sibling
+      # container (spawned via the docker socket below) can mount the *same*
+      # directory — files the agent creates there are then visible to the
+      # backend's display tools. Run `docker compose` from the repo root.
+      - ${PWD}/workspace:/workspace
       - backend-data:/data
+      # Sibling-container access: lets the backend spawn the sandbox container on
+      # the host daemon. NOTE: mounting the socket grants the backend root-
+      # equivalent control of the host Docker daemon — acceptable for a single-
+      # user local app, not for a shared or network-exposed deployment.
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - ./backend/.env
     environment:
       - WORKSPACE_DIR=/workspace
+      # Real host path of the workspace, used as the bind source when the backend
+      # spawns the sandbox container (see backend/plugins/container.py).
+      - HOST_WORKSPACE_DIR=${PWD}/workspace
       - SQLITE_DB_PATH=/data/copilot.sqlite3
       - EMBEDDINGS_URL=http://embeddings:8001
     depends_on:

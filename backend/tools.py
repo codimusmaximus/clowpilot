@@ -260,15 +260,22 @@ def create_folder(path: str) -> dict[str, Any]:
 
 def read_file(path: str) -> dict[str, Any]:
     p = _safe_path(path)
-    if p.suffix.lower() in IMAGE_EXTS:
-        return {"error": f"'{path}' is an image — use display_image to show it"}
     rel = str(p.relative_to(WORKSPACE))
     file = db.get_file(rel)
+    disk_path = WORKSPACE / rel
+    on_disk = disk_path.exists() and disk_path.is_file()
+
+    if p.suffix.lower() in IMAGE_EXTS:
+        # Only steer to display_image if the image actually exists; otherwise
+        # report the truth so the model doesn't chase a missing file.
+        if file is not None or on_disk:
+            return {"error": f"'{path}' is an image — use display_image to show it"}
+        return {"error": f"file not found: {path}"}
+
     if file is not None:
         return file
     # Fall back to reading directly from disk (file exists on mount but not in DB)
-    disk_path = WORKSPACE / rel
-    if disk_path.exists() and disk_path.is_file():
+    if on_disk:
         try:
             content = disk_path.read_text(errors="replace")
             return {"path": rel, "content": content, "kind": _ext_kind(disk_path), "bytes": len(content.encode())}

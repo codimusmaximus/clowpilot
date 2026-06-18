@@ -17,6 +17,7 @@ provider and emits a brief notice in the chat.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import json
@@ -113,6 +114,12 @@ PROVIDERS: list[dict] = [
         "env_keys": ["MISTRAL_API_KEY"],
     },
     # ── Anthropic ────────────────────────────────────────────────────────────
+    {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "model": "anthropic:claude-opus-4-8",
+        "env_keys": ["ANTHROPIC_API_KEY"],
+    },
     {
         "id": "claude-opus-4-7",
         "name": "Claude Opus 4.7",
@@ -492,6 +499,77 @@ def _is_retryable_error(exc: Exception) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tool-call previews — a small/fast LLM narrates each tool call
+# ---------------------------------------------------------------------------
+
+# How long to wait for a tool to finish before narrating from arguments alone.
+# If the tool completes within this window we narrate from args + result;
+# otherwise we narrate from the arguments at this mark so a preview shows fast.
+PREVIEW_RESULT_WINDOW = 0.3  # seconds
+
+_PREVIEW_SYSTEM = (
+    "You narrate a single agent tool call for a non-technical user. "
+    "Reply with ONE short past-tense clause, at most ~10 words — what the call "
+    "did or is doing. No quotes, no markdown, no trailing period, no preamble. "
+    "If a result is given, describe the outcome; otherwise describe the intent. "
+    "Examples: 'searched the web for Q3 revenue', "
+    "'read report/summary.md', 'sent an email to the finance team'."
+)
+
+# Cache one lightweight Agent per preview model.
+_preview_agents: dict[str, Agent] = {}
+
+
+def _preview_model() -> str | None:
+    """Pick a small/fast model for narrating tool calls, or None if unavailable."""
+    explicit = os.environ.get("TOOL_PREVIEW_MODEL")
+    if explicit:
+        return explicit
+    available = list_available_models()
+    if not available:
+        return None
+    # Prefer Claude Haiku when Anthropic is configured.
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        for m in available:
+            if "haiku" in m["model"]:
+                return m["model"]
+    # Otherwise the smallest/cheapest available tier.
+    for kw in ("haiku", "flash-lite", "flash", "mini", "nano", "small"):
+        for m in available:
+            if kw in m["model"]:
+                return m["model"]
+    return available[0]["model"]
+
+
+def _get_preview_agent(model: str) -> Agent:
+    agent = _preview_agents.get(model)
+    if agent is None:
+        agent = Agent(model, system_prompt=_PREVIEW_SYSTEM)
+        _preview_agents[model] = agent
+    return agent
+
+
+async def _summarize_tool_call(
+    model: str | None,
+    name: str,
+    args: Any,
+    result: Any = None,
+) -> str:
+    """One-line natural-language description of a tool call. '' on any failure."""
+    if not model:
+        return ""
+    try:
+        payload: dict[str, Any] = {"tool": name, "arguments": args}
+        if result is not None:
+            payload["result"] = result
+        prompt = json.dumps(payload, default=str)[:1500]
+        run = await _get_preview_agent(model).run(prompt)
+        return (run.output or "").strip().strip('"').rstrip(".")[:140]
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Main run loop with auto-fallback
 # ---------------------------------------------------------------------------
 
@@ -502,62 +580,136 @@ async def _stream_model(
     conversation_id: str | None,
     system_prompt: str | None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Yield processed SSE event dicts for one model run."""
+    """Yield processed SSE event dicts for one model run.
 
-    tool_calls: dict[int, dict[str, str]] = {}
-    runtime_agent = _build_agent(conversation_id, model_str)
+    Tool calls are narrated by a small LLM (see `_summarize_tool_call`). Because
+    narration is async and timing-dependent, the main stream and the concurrent
+    preview tasks both feed an `asyncio.Queue` that this generator drains.
+    """
+    preview_model = _preview_model()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    sentinel = object()
 
-    # Entering the agent context opens connections to any attached MCP servers
-    # (and is a cheap no-op when there are none).
-    async with runtime_agent:
-        async for event in runtime_agent.run_stream_events(
-            prompt,
-            message_history=history,
-            instructions=_compose_system_prompt(
-                base_prompt=system_prompt or BASE_SYSTEM_PROMPT,
-                conversation_id=conversation_id,
-            ),
-        ):
-            if isinstance(event, PartStartEvent):
-                part = event.part
-                if isinstance(part, TextPart):
-                    if part.content:
-                        yield {"type": "text-delta", "delta": part.content}
-                elif isinstance(part, ToolCallPart):
-                    tool_calls[event.index] = {"id": part.tool_call_id, "name": part.tool_name}
-                    yield {"type": "tool-call-start", "id": part.tool_call_id, "name": part.tool_name}
-                    if part.args:
-                        delta = part.args if isinstance(part.args, str) else json.dumps(part.args)
-                        yield {"type": "tool-call-input-delta", "id": part.tool_call_id, "delta": delta}
+    tool_meta: dict[str, dict[str, Any]] = {}  # id -> {name, args, start}
+    resulted: set[str] = set()
+    previewed: set[str] = set()
+    bg: set[asyncio.Task] = set()
 
-            elif isinstance(event, PartDeltaEvent):
-                delta = event.delta
-                if isinstance(delta, TextPartDelta):
-                    yield {"type": "text-delta", "delta": delta.content_delta}
-                elif isinstance(delta, ToolCallPartDelta):
-                    tc = tool_calls.get(event.index)
-                    if tc and delta.args_delta is not None:
-                        chunk = (
-                            delta.args_delta
-                            if isinstance(delta.args_delta, str)
-                            else json.dumps(delta.args_delta)
-                        )
-                        yield {"type": "tool-call-input-delta", "id": tc["id"], "delta": chunk}
+    def track(coro) -> None:
+        t = asyncio.create_task(coro)
+        bg.add(t)
+        t.add_done_callback(bg.discard)
 
-            elif isinstance(event, FunctionToolCallEvent):
-                part = event.part
-                args = part.args
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args) if args else {}
-                    except json.JSONDecodeError:
-                        args = {}
-                yield {"type": "tool-call-input", "id": part.tool_call_id, "name": part.tool_name, "input": args or {}}
+    async def gen_preview(tool_id: str, name: str, args: Any, result: Any) -> None:
+        if tool_id in previewed:
+            return
+        previewed.add(tool_id)
+        text = await _summarize_tool_call(preview_model, name, args, result)
+        if text:
+            stage = "result" if result is not None else "args"
+            await queue.put({"type": "tool-preview", "id": tool_id, "stage": stage, "text": text})
 
-            elif isinstance(event, FunctionToolResultEvent):
-                result = event.result
-                if isinstance(result, ToolReturnPart):
-                    yield {"type": "tool-result", "id": result.tool_call_id, "name": result.tool_name, "result": result.content}
+    async def preview_timer(tool_id: str, name: str, args: Any) -> None:
+        # Tool is still running after the window — narrate from arguments alone.
+        try:
+            await asyncio.sleep(PREVIEW_RESULT_WINDOW)
+        except asyncio.CancelledError:
+            return
+        if tool_id not in resulted:
+            await gen_preview(tool_id, name, args, None)
+
+    async def producer() -> None:
+        tool_calls: dict[int, dict[str, str]] = {}
+        try:
+            runtime_agent = _build_agent(conversation_id, model_str)
+            # Entering the agent context opens connections to any attached MCP
+            # servers (a cheap no-op when there are none).
+            async with runtime_agent:
+                async for event in runtime_agent.run_stream_events(
+                    prompt,
+                    message_history=history,
+                    instructions=_compose_system_prompt(
+                        base_prompt=system_prompt or BASE_SYSTEM_PROMPT,
+                        conversation_id=conversation_id,
+                    ),
+                ):
+                    if isinstance(event, PartStartEvent):
+                        part = event.part
+                        if isinstance(part, TextPart):
+                            if part.content:
+                                await queue.put({"type": "text-delta", "delta": part.content})
+                        elif isinstance(part, ToolCallPart):
+                            tool_calls[event.index] = {"id": part.tool_call_id, "name": part.tool_name}
+                            await queue.put({"type": "tool-call-start", "id": part.tool_call_id, "name": part.tool_name})
+                            if part.args:
+                                delta = part.args if isinstance(part.args, str) else json.dumps(part.args)
+                                await queue.put({"type": "tool-call-input-delta", "id": part.tool_call_id, "delta": delta})
+
+                    elif isinstance(event, PartDeltaEvent):
+                        delta = event.delta
+                        if isinstance(delta, TextPartDelta):
+                            await queue.put({"type": "text-delta", "delta": delta.content_delta})
+                        elif isinstance(delta, ToolCallPartDelta):
+                            tc = tool_calls.get(event.index)
+                            if tc and delta.args_delta is not None:
+                                chunk = (
+                                    delta.args_delta
+                                    if isinstance(delta.args_delta, str)
+                                    else json.dumps(delta.args_delta)
+                                )
+                                await queue.put({"type": "tool-call-input-delta", "id": tc["id"], "delta": chunk})
+
+                    elif isinstance(event, FunctionToolCallEvent):
+                        part = event.part
+                        args = part.args
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args) if args else {}
+                            except json.JSONDecodeError:
+                                args = {}
+                        args = args or {}
+                        await queue.put({"type": "tool-call-input", "id": part.tool_call_id, "name": part.tool_name, "input": args})
+                        if preview_model:
+                            tool_meta[part.tool_call_id] = {
+                                "name": part.tool_name,
+                                "args": args,
+                                "start": asyncio.get_running_loop().time(),
+                            }
+                            track(preview_timer(part.tool_call_id, part.tool_name, args))
+
+                    elif isinstance(event, FunctionToolResultEvent):
+                        result = event.result
+                        if isinstance(result, ToolReturnPart):
+                            await queue.put({"type": "tool-result", "id": result.tool_call_id, "name": result.tool_name, "result": result.content})
+                            resulted.add(result.tool_call_id)
+                            meta = tool_meta.get(result.tool_call_id)
+                            if meta and preview_model:
+                                elapsed = asyncio.get_running_loop().time() - meta["start"]
+                                # Fast tool: narrate from arguments AND result.
+                                # (Slow tools were already narrated from args by the timer.)
+                                if elapsed < PREVIEW_RESULT_WINDOW:
+                                    track(gen_preview(result.tool_call_id, meta["name"], meta["args"], result.content))
+
+            # Flush any in-flight preview tasks before signalling completion.
+            if bg:
+                await asyncio.gather(*list(bg), return_exceptions=True)
+        finally:
+            await queue.put(sentinel)
+
+    prod = asyncio.create_task(producer())
+    try:
+        while True:
+            item = await queue.get()
+            if item is sentinel:
+                break
+            yield item
+        await prod  # surface any exception (e.g. quota) for run()'s fallback
+    finally:
+        if not prod.done():
+            prod.cancel()
+        for t in list(bg):
+            if not t.done():
+                t.cancel()
 
 
 async def run(

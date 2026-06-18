@@ -41,26 +41,26 @@ function normalizeAttachments(
 }
 
 function toThreadMessageLike(m: AppMessage) {
-  const textContent = m.parts
-    .filter((p): p is Extract<AppMessage["parts"][number], { type: "text" }> => p.type === "text")
-    .map((p) => ({ type: "text" as const, text: p.text }));
-
-  const toolContent = m.parts
-    .filter((p): p is Extract<AppMessage["parts"][number], { type: "tool-call" }> => p.type === "tool-call")
-    .map((p) => ({
-      type: "tool-call" as const,
-      toolCallId: p.toolCallId,
-      toolName: p.toolName,
-      args: asReadonlyJsonObject(p.args),
-      argsText: p.argsText ?? "",
-      result: p.result,
-      isError: p.status === "error",
-    }));
+  // Preserve the original part order so text and tool calls render
+  // chronologically (interleaved as they occurred), not grouped by type.
+  const content = m.parts.map((p) =>
+    p.type === "text"
+      ? { type: "text" as const, text: p.text }
+      : {
+          type: "tool-call" as const,
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          args: asReadonlyJsonObject(p.args),
+          argsText: p.argsText ?? "",
+          result: p.result,
+          isError: p.status === "error",
+        },
+  );
 
   return {
     id: m.id,
     role: m.role,
-    content: [...textContent, ...toolContent],
+    content,
     attachments: normalizeAttachments(m.attachments),
     createdAt: new Date(m.createdAt),
   };

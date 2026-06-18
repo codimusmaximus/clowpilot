@@ -740,6 +740,22 @@ function handleEvent(
       applyToolToWorkspace(name, result);
       break;
     }
+    case "tool-preview": {
+      const id = String(event.id);
+      const text = String(event.text ?? "");
+      const stage = event.stage === "result" ? "result" : "args";
+      updateAssistant((m) => {
+        const tc = m.parts.find(
+          (p): p is ToolCallPart =>
+            p.type === "tool-call" && p.toolCallId === id
+        );
+        if (tc) {
+          tc.preview = text;
+          tc.previewStage = stage;
+        }
+      });
+      break;
+    }
     case "error": {
       updateAssistant((m) => {
         m.parts.push({
