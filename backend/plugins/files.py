@@ -1,8 +1,10 @@
 """Files plugin — real filesystem operations on the mounted workspace.
 
-Files live on disk at WORKSPACE_DIR (mounted volume). They are NOT
-automatically indexed or searchable — use the Pages plugin for content
-you want the assistant to search and manage.
+Files live on disk at WORKSPACE_DIR (mounted volume). Text files written here
+ARE indexed for semantic search (source="file") and stay current on write and
+delete; the Search plugin's `index_search` finds them alongside DB pages. Files
+that appear on disk out-of-band can be picked up with the Search plugin's
+`reindex` sweep.
 
 Typical use cases:
 - Reading config files, scripts, or data the user dropped into the mount
@@ -19,18 +21,20 @@ from plugins.base import PluginSpec, ToolSpec
 
 
 INSTRUCTIONS = """Files plugin (real filesystem — mounted volume):
-Files are actual files on disk at the workspace mount. Unlike pages, they are
-NOT indexed for search. Use this plugin when operating on the raw filesystem.
+Files are actual files on disk at the workspace mount. Text files are indexed
+for semantic search (source="file"); use the Search plugin's `index_search` to
+find them and `reindex` to pick up files that appeared on disk out-of-band.
 
 - `file_list`  — list files on disk (what's actually in the mounted volume)
 - `file_read`  — read a file from disk
-- `file_write` — write a file to disk (does not index in the page database)
-- `file_delete` — delete a file or directory from disk
+- `file_write` — write a file to disk (text files are indexed automatically)
+- `file_delete` — delete a file or directory from disk (drops it from the index)
 
 When to use Files vs Pages:
-- Use **Pages** when you want to create/edit/search content the assistant manages.
+- Use **Pages** when you want the assistant to manage structured content.
 - Use **Files** when the user dropped files into the workspace mount that you
   need to read, or when writing outputs that should live on disk directly.
+- Either way, content is searchable via the Search plugin.
 """
 
 

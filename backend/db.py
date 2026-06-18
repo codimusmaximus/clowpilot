@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -53,15 +54,18 @@ def init() -> None:
                 created_at REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS chunks (
-                id          TEXT PRIMARY KEY,
-                file_path   TEXT NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                content     TEXT NOT NULL,
-                metadata    TEXT NOT NULL DEFAULT '{}',
-                embedding   BLOB,
-                UNIQUE(file_path, chunk_index)
+                id           TEXT PRIMARY KEY,
+                source       TEXT NOT NULL DEFAULT 'page',
+                file_path    TEXT NOT NULL,
+                chunk_index  INTEGER NOT NULL,
+                content      TEXT NOT NULL,
+                metadata     TEXT NOT NULL DEFAULT '{}',
+                content_hash TEXT,
+                embedding    BLOB,
+                updated_at   REAL,
+                UNIQUE(source, file_path, chunk_index)
             );
-            CREATE INDEX IF NOT EXISTS chunks_file ON chunks(file_path);
+            CREATE INDEX IF NOT EXISTS chunks_file ON chunks(source, file_path);
 
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
@@ -78,23 +82,38 @@ def init() -> None:
             CREATE INDEX IF NOT EXISTS attachments_conversation_id ON attachments(conversation_id);
             """
         )
-        # Migrate existing chunks table if it still carries the legacy foreign key to files.
+        # Migrate the chunks table forward. Two legacy shapes exist:
+        #   (a) a foreign key to files (oldest), and
+        #   (b) no `source`/`content_hash`/`updated_at` columns (pre-unified-index).
+        # Both are rebuilt into the current schema, tagging existing rows as
+        # pages (the only thing that was ever indexed before).
         chunks_info = conn.execute("PRAGMA foreign_key_list(chunks)").fetchall()
         has_file_fk = any(row["table"] == "files" for row in chunks_info)
-        if has_file_fk:
+        chunks_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()
+        }
+        if has_file_fk or "source" not in chunks_cols:
             conn.executescript(
                 """
-                DROP TABLE chunks;
+                ALTER TABLE chunks RENAME TO chunks_legacy;
                 CREATE TABLE chunks (
-                    id          TEXT PRIMARY KEY,
-                    file_path   TEXT NOT NULL,
-                    chunk_index INTEGER NOT NULL,
-                    content     TEXT NOT NULL,
-                    metadata    TEXT NOT NULL DEFAULT '{}',
-                    embedding   BLOB,
-                    UNIQUE(file_path, chunk_index)
+                    id           TEXT PRIMARY KEY,
+                    source       TEXT NOT NULL DEFAULT 'page',
+                    file_path    TEXT NOT NULL,
+                    chunk_index  INTEGER NOT NULL,
+                    content      TEXT NOT NULL,
+                    metadata     TEXT NOT NULL DEFAULT '{}',
+                    content_hash TEXT,
+                    embedding    BLOB,
+                    updated_at   REAL,
+                    UNIQUE(source, file_path, chunk_index)
                 );
-                CREATE INDEX chunks_file ON chunks(file_path);
+                INSERT INTO chunks
+                    (id, source, file_path, chunk_index, content, metadata, embedding)
+                SELECT id, 'page', file_path, chunk_index, content, metadata, embedding
+                FROM chunks_legacy;
+                DROP TABLE chunks_legacy;
+                CREATE INDEX IF NOT EXISTS chunks_file ON chunks(source, file_path);
                 """
             )
 
@@ -277,82 +296,238 @@ def _serialize_vec(v: list[float]) -> bytes:
     return struct.pack(f"{len(v)}f", *v)
 
 
-def _chunk_text(text: str, size: int = 1000, overlap: int = 150) -> list[str]:
+# Chunking is token-based: 500 tokens per chunk with 100 tokens of overlap.
+CHUNK_TOKENS = 500
+CHUNK_OVERLAP = 100
+
+_encoder: Any = None
+
+
+def _get_encoder() -> Any:
+    """Return a cached tiktoken encoder, or None if tiktoken is unavailable.
+
+    cl100k_base is a model-agnostic proxy for "tokens" — the embedding model
+    (MiniLM) uses its own wordpiece tokenizer, but tiktoken gives a stable,
+    standard token count for chunk sizing.
+    """
+    global _encoder
+    if _encoder is None:
+        try:
+            import tiktoken
+
+            _encoder = tiktoken.get_encoding("cl100k_base")
+        except Exception:  # pragma: no cover - fallback when tiktoken missing
+            _encoder = False
+    return _encoder or None
+
+
+def _chunk_text(
+    text: str, size: int = CHUNK_TOKENS, overlap: int = CHUNK_OVERLAP
+) -> list[str]:
+    """Split text into ~`size`-token chunks overlapping by `overlap` tokens.
+
+    Falls back to a whitespace-word approximation if tiktoken is unavailable so
+    indexing still works (each word ≈ one token).
+    """
     text = text.strip()
     if not text:
         return []
+    if overlap >= size:
+        overlap = size // 5
+
+    enc = _get_encoder()
+    if enc is not None:
+        tokens = enc.encode(text)
+        decode = lambda toks: enc.decode(toks)
+    else:
+        tokens = text.split()
+        decode = lambda toks: " ".join(toks)
+
     chunks: list[str] = []
     start = 0
-    while start < len(text):
-        end = min(start + size, len(text))
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
+    step = size - overlap
+    while start < len(tokens):
+        end = min(start + size, len(tokens))
+        piece = decode(tokens[start:end]).strip()
+        if piece:
+            chunks.append(piece)
+        if end >= len(tokens):
             break
-        start = end - overlap
+        start += step
     return chunks
 
 
-def index_file(path: str, content: str, kind: str) -> None:
+def _content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _current_hash(conn: sqlite3.Connection, source: str, path: str) -> str | None:
+    """Return the stored content hash for an indexed item, if any."""
+    row = conn.execute(
+        "SELECT content_hash FROM chunks WHERE source = ? AND file_path = ? LIMIT 1",
+        (source, path),
+    ).fetchone()
+    return str(row["content_hash"]) if row and row["content_hash"] else None
+
+
+def index_content(
+    source: str,
+    path: str,
+    content: str,
+    kind: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Chunk, embed, and store `content` under (source, path) in the vector index.
+
+    `source` namespaces the entry — "page" for DB-backed pages, "file" for real
+    files on the mounted filesystem — so the two never collide on path. Skips
+    re-embedding when the content hash is unchanged (update-on-change). Pass
+    extra `metadata` (size, mtime, …) to store alongside each chunk.
+    """
     if len(content.encode()) > _MAX_INDEX_BYTES:
-        return
+        unindex(source, path)
+        return {"source": source, "path": path, "indexed": 0, "skipped": "too_large"}
+
+    content_hash = _content_hash(content)
+    with _connect() as conn:
+        if _current_hash(conn, source, path) == content_hash:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM chunks WHERE source = ? AND file_path = ?",
+                (source, path),
+            ).fetchone()["n"]
+            return {
+                "source": source,
+                "path": path,
+                "indexed": int(count),
+                "skipped": "unchanged",
+            }
+
     chunks = _chunk_text(content)
     if not chunks:
-        return
+        unindex(source, path)
+        return {"source": source, "path": path, "indexed": 0}
+
     embeddings = _embed(chunks)
+    now = time.time()
+    base_meta = {"source": source, "kind": kind, "path": path, **(metadata or {})}
     with _connect() as conn:
-        conn.execute("DELETE FROM chunks WHERE file_path = ?", (path,))
+        conn.execute(
+            "DELETE FROM chunks WHERE source = ? AND file_path = ?", (source, path)
+        )
         conn.executemany(
             """
-            INSERT INTO chunks (id, file_path, chunk_index, content, metadata, embedding)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO chunks
+                (id, source, file_path, chunk_index, content, metadata,
+                 content_hash, embedding, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     str(uuid.uuid4()),
+                    source,
                     path,
                     i,
                     chunk,
-                    json.dumps({"kind": kind}),
+                    json.dumps({**base_meta, "chunk_index": i, "chunks_total": len(chunks)}),
+                    content_hash,
                     _serialize_vec(emb),
+                    now,
                 )
                 for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
             ],
         )
+    return {"source": source, "path": path, "indexed": len(chunks)}
+
+
+def index_file(path: str, content: str, kind: str) -> dict[str, Any]:
+    """Index a DB-backed page (source='page'). Thin wrapper over index_content."""
+    return index_content("page", path, content, kind)
+
+
+def unindex(source: str, path: str) -> int:
+    """Remove all chunks for a single (source, path) entry. Returns rows deleted."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM chunks WHERE source = ? AND file_path = ?", (source, path)
+        )
+    return int(cur.rowcount)
+
+
+def unindex_prefix(source: str, prefix: str) -> int:
+    """Remove chunks for an entry and everything beneath it (folder deletes)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM chunks WHERE source = ? AND (file_path = ? OR file_path LIKE ?)",
+            (source, prefix, f"{prefix}/%"),
+        )
+    return int(cur.rowcount)
+
+
+def list_indexed_paths(source: str) -> list[str]:
+    """Return distinct document paths currently indexed for a source."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT file_path FROM chunks WHERE source = ?", (source,)
+        ).fetchall()
+    return [str(row["file_path"]) for row in rows]
+
+
+def index_status() -> dict[str, Any]:
+    """Summarise the vector index: chunk + document counts per source."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source,
+                   COUNT(*) AS chunks,
+                   COUNT(DISTINCT file_path) AS documents
+            FROM chunks
+            GROUP BY source
+            """
+        ).fetchall()
+    by_source = {
+        row["source"]: {"chunks": int(row["chunks"]), "documents": int(row["documents"])}
+        for row in rows
+    }
+    return {
+        "by_source": by_source,
+        "total_chunks": sum(s["chunks"] for s in by_source.values()),
+        "total_documents": sum(s["documents"] for s in by_source.values()),
+        "chunk_tokens": CHUNK_TOKENS,
+        "chunk_overlap": CHUNK_OVERLAP,
+        "tokenizer": "cl100k_base" if _get_encoder() is not None else "word-approx",
+    }
 
 
 def search_chunks(
     query: str,
     limit: int = 5,
     kind_filter: str | None = None,
+    source_filter: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Semantic search over the unified index, optionally scoped by source/kind."""
     query_bytes = _serialize_vec(_embed([query])[0])
+    where = ["embedding IS NOT NULL"]
+    params: list[Any] = [query_bytes]
     if kind_filter:
-        sql = """
-            SELECT file_path, chunk_index, content, metadata,
-                   vec_distance_cosine(embedding, ?) AS distance
-            FROM chunks
-            WHERE embedding IS NOT NULL
-              AND json_extract(metadata, '$.kind') = ?
-            ORDER BY distance
-            LIMIT ?
-        """
-        params: tuple = (query_bytes, kind_filter, limit)
-    else:
-        sql = """
-            SELECT file_path, chunk_index, content, metadata,
-                   vec_distance_cosine(embedding, ?) AS distance
-            FROM chunks
-            WHERE embedding IS NOT NULL
-            ORDER BY distance
-            LIMIT ?
-        """
-        params = (query_bytes, limit)
+        where.append("json_extract(metadata, '$.kind') = ?")
+        params.append(kind_filter)
+    if source_filter:
+        where.append("source = ?")
+        params.append(source_filter)
+    params.append(limit)
+    sql = f"""
+        SELECT source, file_path, chunk_index, content, metadata,
+               vec_distance_cosine(embedding, ?) AS distance
+        FROM chunks
+        WHERE {" AND ".join(where)}
+        ORDER BY distance
+        LIMIT ?
+    """
     with _connect() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
     return [
         {
+            "source": row["source"],
             "file_path": row["file_path"],
             "chunk_index": row["chunk_index"],
             "content": row["content"],
@@ -643,7 +818,7 @@ def delete_path(path: str) -> int:
             "DELETE FROM folders WHERE path = ? OR path LIKE ?", (path, f"{path}/%")
         )
         conn.execute(
-            "DELETE FROM chunks WHERE file_path = ? OR file_path LIKE ?",
+            "DELETE FROM chunks WHERE source = 'page' AND (file_path = ? OR file_path LIKE ?)",
             (path, f"{path}/%"),
         )
     return int(file_cursor.rowcount) + int(folder_cursor.rowcount)
@@ -710,7 +885,10 @@ def move_path(source: str, destination: str) -> dict[str, Any]:
 
         if is_file:
             conn.execute("UPDATE files SET path = ? WHERE path = ?", (new_rel, src_rel))
-            conn.execute("UPDATE chunks SET file_path = ? WHERE file_path = ?", (new_rel, src_rel))
+            conn.execute(
+                "UPDATE chunks SET file_path = ? WHERE source = 'page' AND file_path = ?",
+                (new_rel, src_rel),
+            )
             moved_files = 1
         else:
             conn.execute("UPDATE folders SET path = ? WHERE path = ?", (new_rel, src_rel))
@@ -722,7 +900,10 @@ def move_path(source: str, destination: str) -> dict[str, Any]:
                 old = str(row["path"])
                 new = new_rel + old[len(src_rel):]
                 conn.execute("UPDATE files SET path = ? WHERE path = ?", (new, old))
-                conn.execute("UPDATE chunks SET file_path = ? WHERE file_path = ?", (new, old))
+                conn.execute(
+                    "UPDATE chunks SET file_path = ? WHERE source = 'page' AND file_path = ?",
+                    (new, old),
+                )
                 moved_files += 1
 
             for row in conn.execute(

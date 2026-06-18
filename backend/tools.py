@@ -194,16 +194,22 @@ def disk_read_file(path: str) -> dict[str, Any]:
 
 
 def disk_write_file(path: str, content: str) -> dict[str, Any]:
-    """Write a file directly to the filesystem mount (bypasses the DB/index)."""
+    """Write a file directly to the filesystem mount and index it for search."""
     p = _safe_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
     rel = str(p.relative_to(WORKSPACE))
-    return {"path": rel, "action": "written", "bytes": len(content.encode())}
+    indexed = _index_disk_file(rel, p, content)
+    return {
+        "path": rel,
+        "action": "written",
+        "bytes": len(content.encode()),
+        "indexed": indexed.get("indexed", 0) if indexed else 0,
+    }
 
 
 def disk_delete_file(path: str) -> dict[str, Any]:
-    """Delete a file or directory from the filesystem mount."""
+    """Delete a file or directory from the filesystem mount and drop its index."""
     import shutil
     p = _safe_path(path)
     rel = str(p.relative_to(WORKSPACE))
@@ -211,9 +217,166 @@ def disk_delete_file(path: str) -> dict[str, Any]:
         return {"error": f"not found: {path}"}
     if p.is_dir():
         shutil.rmtree(p)
+        db.unindex_prefix("file", rel)
         return {"path": rel, "action": "deleted", "type": "directory"}
     p.unlink()
+    db.unindex("file", rel)
     return {"path": rel, "action": "deleted", "type": "file"}
+
+
+# ---------- filesystem indexing ----------
+
+# Real attachments live under here and are indexed via the upload pipeline as
+# pages; skip them in the filesystem sweep to avoid duplicate/binary indexing.
+_ATTACHMENTS_REL = str(ATTACHMENTS_DIR.relative_to(WORKSPACE)) if WORKSPACE in ATTACHMENTS_DIR.parents else "attachments"
+
+
+def _is_indexable(p: Path) -> bool:
+    """Only index text-like files (skip images/binaries and the attachments tree)."""
+    rel = str(p.relative_to(WORKSPACE))
+    if rel == _ATTACHMENTS_REL or rel.startswith(f"{_ATTACHMENTS_REL}/"):
+        return False
+    if any(part.startswith(".") for part in p.relative_to(WORKSPACE).parts):
+        return False
+    return _ext_kind(p) != "image"
+
+
+def _index_disk_file(rel: str, p: Path, content: str | None = None) -> dict[str, Any] | None:
+    """Index a single on-disk file (source='file'). Returns None if not indexable."""
+    if not _is_indexable(p):
+        return None
+    try:
+        if content is None:
+            content = p.read_text(errors="replace")
+        stat = p.stat()
+        return db.index_content(
+            "file",
+            rel,
+            content,
+            _ext_kind(p),
+            metadata={"bytes": stat.st_size, "mtime": stat.st_mtime},
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        return {"path": rel, "error": str(e), "indexed": 0}
+
+
+def reindex_disk() -> dict[str, Any]:
+    """Sweep the whole mounted filesystem and (re)index every text file.
+
+    Hash-based: unchanged files are skipped cheaply. Also prunes index entries
+    whose backing file has disappeared. Use after dropping files into the mount.
+    """
+    seen: set[str] = set()
+    indexed = 0
+    skipped = 0
+    documents = 0
+    for entry in _scan_disk():
+        rel = entry["path"]
+        p = WORKSPACE / rel
+        if not _is_indexable(p):
+            continue
+        result = _index_disk_file(rel, p)
+        if result is None:
+            continue
+        seen.add(rel)
+        documents += 1
+        if result.get("skipped") == "unchanged":
+            skipped += 1
+        else:
+            indexed += result.get("indexed", 0)
+
+    # Prune entries for files that no longer exist on disk.
+    pruned = 0
+    for path in db.list_indexed_paths("file"):
+        if path not in seen:
+            pruned += db.unindex("file", path)
+
+    return {
+        "documents": documents,
+        "files_indexed": documents - skipped,
+        "files_unchanged": skipped,
+        "chunks_indexed": indexed,
+        "chunks_pruned": pruned,
+    }
+
+
+# ---------- folder context for search results ----------
+
+_CONTEXT_MAX_ITEMS = 50
+
+
+def _parent_of(path: str) -> str:
+    return "/".join(path.strip("/").split("/")[:-1])
+
+
+def _namespace_entries(source: str) -> dict[str, dict[str, str]]:
+    """Map every path in a source to its type/kind, including derived folders.
+
+    "page" reads the DB page tree (files + virtual folders); "file" walks the
+    real filesystem mount. Parent folders are synthesised from file paths so the
+    namespace is complete even when a folder has no explicit record.
+    """
+    entries: dict[str, dict[str, str]] = {}
+
+    if source == "file":
+        files = _scan_disk()
+    else:
+        files = [
+            {"path": f["path"], "kind": f["kind"]} for f in db.list_files()
+        ]
+
+    for f in files:
+        entries[f["path"]] = {"type": "file", "kind": f.get("kind", "text")}
+        parts = f["path"].split("/")
+        for i in range(1, len(parts)):
+            folder = "/".join(parts[:i])
+            entries.setdefault(folder, {"type": "dir", "kind": "dir"})
+
+    if source == "page":
+        for folder in db.list_folders():
+            entries.setdefault(str(folder), {"type": "dir", "kind": "dir"})
+
+    return entries
+
+
+def _sorted_entries(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    # Folders first, then alphabetical (case-insensitive) by path.
+    return sorted(items, key=lambda e: (e["type"] != "dir", e["path"].lower()))
+
+
+def _path_context(path: str, entries: dict[str, dict[str, str]]) -> dict[str, Any]:
+    """Folder context for a hit: parent, breadcrumb up, children, and siblings."""
+    path = path.strip("/")
+    parent = _parent_of(path)
+
+    ancestors: list[str] = []
+    cur = ""
+    for seg in path.split("/")[:-1]:
+        cur = f"{cur}/{seg}".strip("/")
+        ancestors.append(cur)
+
+    siblings: list[dict[str, str]] = []
+    children: list[dict[str, str]] = []
+    for other, meta in entries.items():
+        if other == path:
+            continue
+        entry = {"path": other, "name": other.split("/")[-1], **meta}
+        other_parent = _parent_of(other)
+        if other_parent == parent:
+            siblings.append(entry)
+        if other_parent == path:
+            children.append(entry)
+
+    siblings = _sorted_entries(siblings)
+    children = _sorted_entries(children)
+    return {
+        "folder": parent,
+        "ancestors": ancestors,
+        "children": children[:_CONTEXT_MAX_ITEMS],
+        "children_total": len(children),
+        "siblings": siblings[:_CONTEXT_MAX_ITEMS],
+        "siblings_total": len(siblings),
+    }
 
 
 # ---------- DB (page) ops ----------
@@ -428,9 +591,27 @@ def highlight(
     }
 
 
-def search(query: str, limit: int = 5, kind: str | None = None) -> dict[str, Any]:
-    """Semantic search across all indexed workspace files."""
-    results = db.search_chunks(query, limit=min(limit, 20), kind_filter=kind)
+def search(
+    query: str,
+    limit: int = 5,
+    kind: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Semantic search across the unified index (DB pages + real disk files).
+
+    source: optional filter — "page" (DB-backed pages) or "file" (filesystem).
+    """
+    results = db.search_chunks(
+        query, limit=min(limit, 20), kind_filter=kind, source_filter=source
+    )
+    # Attach folder context (parent breadcrumb, children, siblings) to each hit.
+    # Namespaces are built once per source and reused across results.
+    namespaces: dict[str, dict[str, dict[str, str]]] = {}
+    for result in results:
+        src = result["source"]
+        if src not in namespaces:
+            namespaces[src] = _namespace_entries(src)
+        result["context"] = _path_context(result["file_path"], namespaces[src])
     return {"query": query, "results": results}
 
 
