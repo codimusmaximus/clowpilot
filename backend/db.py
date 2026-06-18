@@ -14,6 +14,11 @@ from typing import Any
 
 import httpx
 import sqlite_vec
+from dotenv import load_dotenv
+
+# Load backend/.env early (anchored to this file, so it works regardless of the
+# launch directory) — module-level paths below read the environment at import.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 DB_PATH = Path(os.environ.get("SQLITE_DB_PATH", "./copilot.sqlite3")).resolve()

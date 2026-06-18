@@ -11,7 +11,14 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from dotenv import load_dotenv
+
 import db
+
+# Load backend/.env early (anchored to this file, CWD-independent) before reading
+# WORKSPACE_DIR below. load_dotenv() does not override vars already set (e.g. by
+# Docker compose), so deployment env still wins.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "./workspace")).resolve()
